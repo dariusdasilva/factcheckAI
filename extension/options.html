@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>FactCheckAI Options</title>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0a0a0a;
+            color: white;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+        }
+        .card {
+            background: #121212;
+            padding: 2rem;
+            border-radius: 8px;
+            border: 1px solid #27272a;
+            width: 100%;
+            max-width: 500px;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; text-transform: uppercase; color: #fff; }
+        .setting-group {
+            margin-bottom: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        label {
+            font-size: 0.85rem;
+            color: #a1a1aa;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        input, select {
+            width: 100%;
+            padding: 0.75rem;
+            background: #1a1a1a;
+            border: 1px solid #27272a;
+            color: white;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-family: inherit;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #ff4655;
+        }
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid #27272a;
+        }
+        .tab-btn {
+            background: transparent;
+            border: none;
+            padding: 0.5rem 1rem;
+            color: #a1a1aa;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+        .tab-btn.active {
+            color: #fff;
+            border-bottom: 2px solid #ff4655;
+        }
+        .tab-content {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .hidden { display: none; }
+        .btn {
+            background: #ff4655;
+            color: white;
+            border: none;
+            padding: 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 700;
+            text-transform: uppercase;
+            width: 100%;
+            margin-top: 1rem;
+        }
+        #status {
+            margin-top: 1rem;
+            text-align: center;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Extension Settings</h1>
+        
+        <div class="setting-group">
+            <label>API Key</label>
+            <input type="password" id="api_key" placeholder="Paste your API key here...">
+        </div>
+
+        <div class="setting-group">
+            <label>Spending Cap ($)</label>
+            <input type="number" id="spend-cap" value="5.00" step="0.10">
+        </div>
+
+        <div class="setting-group">
+            <label>Model Selection</label>
+            <div class="tabs">
+                <button id="tab-api" class="tab-btn active">API</button>
+                <button id="tab-local" class="tab-btn">Local</button>
+            </div>
+            <div id="content-api" class="tab-content">
+                <select id="select-api-model"></select>
+            </div>
+            <div id="content-local" class="tab-content hidden">
+                <select id="select-local-model"></select>
+            </div>
+        </div>
+
+        <button id="save-btn" class="btn">Save Settings</button>
+        <div id="status"></div>
+    </div>
+    <script src="options.js"></script>
+</body>
+</html>
