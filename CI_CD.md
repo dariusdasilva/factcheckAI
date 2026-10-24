@@ -31,7 +31,7 @@ When you tag a version (`git tag v0.1.0 && git push --tags`), the `release` job 
 | Redis (queue/cache) | skip for the demo — Django-Q2/thread runner + LocMemCache is enough on one dyno | free Redis tiers are flaky; don't risk demo day |
 | Ollama (local tier) | **stays on the demo laptop** — do NOT expect a free container host to run 6 GB models. The fallback chain demo: API down → Ollama on the laptop running the Django instance | this is the intended architecture anyway |
 
-Deployment checklist on Render: new Web Service ← your repo; build = `pip install -r requirements.txt`; start = `python manage.py migrate && gunicorn config.wsgi` (add `gunicorn` to requirements at deploy time); env vars `DJANGO_SECRET_KEY`, `DJANGO_DEBUG=0`, `OPENROUTER_API_KEY`. Run `python manage.py collectstatic --noinput` if you serve the SPA through Django.
+Deployment checklist on Render: new Web Service ← your repo; build = `pip install -r requirements.txt`; start = `python manage.py migrate && gunicorn config.wsgi` (add `gunicorn` to requirements at deploy time); env vars `DJANGO_SECRET_KEY` (required — prod settings fail to start without it), `DJANGO_DEBUG=0`, `DJANGO_ALLOWED_HOSTS` (e.g. `factcheckai.onrender.com`; without it Django 400s every request with `DisallowedHost`), `OPENROUTER_API_KEY`. Run `python manage.py collectstatic --noinput` if you serve the SPA through Django.
 
 **During the hackathon:** CI on push is usually enough; set up the Render deploy once the demo backend works locally (≈ after week-long milestone 3-equivalent), not before. A broken deploy is worse than no deploy on deadline day.
 

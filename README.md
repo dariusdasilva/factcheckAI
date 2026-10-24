@@ -79,6 +79,21 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/checks/ \
 curl -s http://127.0.0.1:8000/api/v1/checks/1/ -H "Authorization: Token $TOKEN"
 ```
 
+### Extension API keys
+
+The extension does not use DRF tokens. Mint its long-lived key once and send it
+the same way (`Bearer` works too; both are accepted):
+
+```bash
+# while authenticated as the user (session or token)
+curl -s -X POST http://127.0.0.1:8000/api/v1/auth/keys/
+# 201 {"id": 1, "key": "fcai_…", "created_at": "…"}   ← shown once, stored hashed
+
+curl -s http://127.0.0.1:8000/api/v1/checks/ -H "Authorization: Token fcai_…"
+```
+
+A revoked or unknown `fcai_…` key returns `401` — never a silent pass.
+
 > Until Chunk B lands, the worker is a placeholder that completes runs as
 > `ok` / `unverified` after a short delay (`FAKE_CHECK_LATENCY_S`, default 2 s).
 > `unverified` is the honest "no model judged this" mark — never a fabricated verdict.
@@ -148,8 +163,10 @@ REST contract) · `WORK_CHUNKS.md` (the four work packages + acceptance tests) �
 ## Deploying
 
 Backend deploys on Render per CI_CD.md: `pip install -r requirements.txt`, then
-`python manage.py migrate && gunicorn config.wsgi` with
-`DJANGO_SECRET_KEY` / `DJANGO_DEBUG=0` / `OPENROUTER_API_KEY` set. Postgres via
+`python manage.py migrate && gunicorn config.wsgi` with `DJANGO_SECRET_KEY`
+(required — the app refuses to start without it) / `DJANGO_DEBUG=0` /
+`DJANGO_ALLOWED_HOSTS` (your Render hostname, e.g.
+`factcheckai.onrender.com`) / `OPENROUTER_API_KEY` set. Postgres via
 `DATABASE_URL`. Ollama stays on the demo laptop (the fallback chain demo is
 API-down → local Ollama by design). Tag `v*` to auto-build the extension zip
 into a GitHub Release.

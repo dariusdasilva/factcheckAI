@@ -6,10 +6,13 @@ verified in smoke tests + A4's throttle suite).
 """
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
 
 from apps.checks.contracts import (
     DEFAULT_FAIL_RETRY_AFTER_S,
+    DEFAULT_PROVIDERS_TRIED,
     FAIL_STATE_DETAIL,
     PROVIDER_OLLAMA,
     PROVIDER_REMOTE_API,
@@ -138,6 +141,73 @@ def test_fail_state_poll_includes_contract_envelope(client_fixture):
     assert data["retry_after"] == DEFAULT_FAIL_RETRY_AFTER_S
     assert data["providers_tried"] == [PROVIDER_REMOTE_API, PROVIDER_OLLAMA]
     assert data["evidence"][0]["hop"] == EvidenceHop.WIKI
+
+
+def test_fail_state_without_audit_payload_uses_contract_defaults(client_fixture):
+    # Audit #2 finding: the fallback branch was untested. A fail_state run with
+    # no audit row must still return a complete, valid §2.2 envelope.
+    client, user = client_fixture
+    claim = Claim.objects.create(text="fail case, no audit", created_by=user)
+    run = CheckRun.objects.create(claim=claim, status=CheckRunStatus.FAIL_STATE)
+
+    data = client.get(f"{SUBMIT_URL}{run.pk}/").json()
+    assert data["detail"] == FAIL_STATE_DETAIL
+    assert data["retry_after"] == DEFAULT_FAIL_RETRY_AFTER_S
+    assert data["providers_tried"] == list(DEFAULT_PROVIDERS_TRIED)
+
+
+def _audit_queries(captured):
+    return [q for q in captured if "checks_auditlog" in q["sql"]]
+
+
+def test_progress_poll_issues_no_audit_queries(client_fixture):
+    # Audit #2 finding: the three fail-state fields each queried AuditLog, and
+    # they ran even on non-fail-state polls before being popped.
+    client, user = client_fixture
+    claim = Claim.objects.create(text="queued case", created_by=user)
+    run = CheckRun.objects.create(claim=claim)
+
+    with CaptureQueriesContext(connection) as ctx:
+        response = client.get(f"{SUBMIT_URL}{run.pk}/")
+
+    assert response.status_code == 200
+    assert "detail" not in response.json()
+    assert _audit_queries(ctx.captured_queries) == []
+
+
+def test_ok_poll_issues_no_audit_queries(client_fixture):
+    client, user = client_fixture
+    claim = Claim.objects.create(text="ok case, no audit", created_by=user)
+    run = CheckRun.objects.create(
+        claim=claim,
+        status=CheckRunStatus.OK,
+        verdict_enum=VerdictEnum.UNVERIFIED,
+    )
+
+    with CaptureQueriesContext(connection) as ctx:
+        response = client.get(f"{SUBMIT_URL}{run.pk}/")
+
+    assert response.status_code == 200
+    assert _audit_queries(ctx.captured_queries) == []
+
+
+def test_fail_state_poll_reads_audit_log_once(client_fixture):
+    client, user = client_fixture
+    claim = Claim.objects.create(text="fail case, one query", created_by=user)
+    run = CheckRun.objects.create(claim=claim, status=CheckRunStatus.FAIL_STATE)
+    AuditLog.objects.create(
+        check_run=run,
+        event="fail_state_entered",
+        json_payload={"providers_tried": [PROVIDER_OLLAMA]},
+    )
+
+    with CaptureQueriesContext(connection) as ctx:
+        response = client.get(f"{SUBMIT_URL}{run.pk}/")
+
+    assert response.status_code == 200
+    assert response.json()["providers_tried"] == [PROVIDER_OLLAMA]
+    # Three serialized fields, one shared lookup.
+    assert len(_audit_queries(ctx.captured_queries)) == 1
 
 
 def test_finished_run_poll_sets_verdict_shape(client_fixture):
