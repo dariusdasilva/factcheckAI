@@ -84,9 +84,11 @@ class WikiClient:
     def _api_get(self, params: dict[str, object]) -> dict:
         try:
             payload = self.session.get_json(WIKI_API_ENDPOINT, params=params)
-        except requests.HTTPError as exc:
-            response = exc.response
-            if response is not None and response.status_code == 503:
+        except requests.RequestException as exc:
+            # §5: Wikipedia down / unreachable / rate-limiting us — the *whole*
+            # request family degrades, not just HTTP status errors.
+            response = getattr(exc, "response", None)
+            if isinstance(response, requests.Response) and response.status_code == 503:
                 # maxlag=5 response: Wikimedia is under load — don't hammer it.
                 raise WikiUnavailableError("MediaWiki is lagged/unavailable (maxlag)") from exc
             raise WikiUnavailableError(f"MediaWiki request failed: {exc}") from exc
@@ -170,6 +172,9 @@ class WikiClient:
     def summary(self, title: str) -> dict:
         """``GET /page/summary/{title}`` — lead extract + canonical URL — cached 7 d.
 
+        ``maxlag`` is an action-API parameter only: the RESTBase endpoint does not
+        accept it, so these requests rely on the shared session's UA/throttle
+        politeness (the docstring in politeness covers the contract).
         A missing page returns HTTP 404, which we map to an empty dict rather than
         an error: a title can be deleted between discovery and read. The empty
         mapping is returned uncached so a republished page is picked up next call.
@@ -187,9 +192,9 @@ class WikiClient:
     def _summary(self, url: str) -> dict:
         try:
             payload = self.session.get_json(url)
-        except requests.HTTPError as exc:
-            response = exc.response
-            if response is not None and response.status_code == 404:
+        except requests.RequestException as exc:
+            response = getattr(exc, "response", None)
+            if isinstance(response, requests.Response) and response.status_code == 404:
                 return {}
             raise WikiUnavailableError(f"Wikipedia summary request failed: {exc}") from exc
         return payload if isinstance(payload, dict) else {}

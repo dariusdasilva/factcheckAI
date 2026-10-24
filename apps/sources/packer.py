@@ -174,7 +174,16 @@ def pack_evidence(
 
 
 def store_evidence(check_run, bundle: EvidenceBundle) -> list[object]:
-    """Persist a bundle onto the Chunk A ``Evidence`` table (hop + labels per §4).
+    """Persist a bundle onto the Chunk A ``Evidence`` table.
+
+    The ``Evidence`` model has no ``label`` column — ``[W#]``/``[S#]`` ids are
+    minted by :func:`pack_evidence` in memory and are only valid alongside the
+    bundle handed to inference in the *same* run (AGENTS.md §4.5: the packer is
+    the single label authority). What is persisted here is the matching
+    ``hop``/``url``/``snippet`` tuple, with the label retained as a ``[W1] ``/
+    ``[S1] `` prefix on the snippet (per the model's help_text "Labelled
+    snippet; ids [W#]/[S#]") so evidence rows stay human-readable and the
+    join key to the ids can be recovered by re-running the packer.
 
     Replaces any prior evidence for the run so re-packing is idempotent.
     """
@@ -187,7 +196,7 @@ def store_evidence(check_run, bundle: EvidenceBundle) -> list[object]:
             hop=item.hop,
             url=item.url[:2048],
             title=item.title[:512],
-            snippet=item.snippet,
+            snippet=f"[{item.label}] {item.snippet}",
             relevance=item.relevance,
         )
         for item in bundle.items

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import partial
 from io import BytesIO
 from urllib.parse import urlsplit
 
@@ -35,6 +36,7 @@ from .constants import (
     PRIMARY_SOURCE_HOSTS,
     PRIMARY_SOURCE_SUFFIXES,
     SOURCE_CACHE_TTL_SECONDS,
+    SOURCE_SNIPPET_MAX_CHARS,
 )
 from .politeness import PolitenessError, PoliteSession
 from .robots import RobotsChecker
@@ -144,6 +146,22 @@ def _store(
     return row
 
 
+def _keep_good_content(cached) -> object | None:
+    """Preserve a previously-fetched row when a re-fetch now fails (§5/TTL).
+
+    A 7-day-old extraction was true when stored; a transient 403 now must not
+    wipe it. Returning the stale-but-good row skips the destructive overwrite;
+    the next check re-attempts the fetch because ``fetched_at`` is stale, so the
+    row never goes permanently unhealthily cached.
+    """
+    from apps.checks.models import EvidenceFetchStatus
+
+    fetched = str(EvidenceFetchStatus.FETCHED)
+    if cached is not None and cached.fetch_status == fetched and cached.text_extract:
+        return cached
+    return None
+
+
 def _is_fresh(row, now, max_age_seconds: int) -> bool:
     if row.fetched_at is None:
         return False
@@ -186,26 +204,32 @@ def fetch_source(
             fetched_at=now,
         )
 
+    error_row = partial(
+        _store,
+        url,
+        content_hash=_sha256(url.encode("utf-8")),
+        fetch_status=EvidenceFetchStatus.ERROR,
+        text="",
+        fetched_at=now,
+    )
     try:
-        response = session.get(url, allow_pdf=True)
+        # PDFs are permitted only for primary sources (gov/edu/doi) per §3.2 stage 4.
+        response = session.get(url, allow_pdf=is_primary_source(url))
         response.raise_for_status()
     except (requests.RequestException, PolitenessError):
-        return _store(
-            url,
-            content_hash=_sha256(url.encode("utf-8")),
-            fetch_status=EvidenceFetchStatus.ERROR,
-            text="",
-            fetched_at=now,
-        )
+        return _keep_good_content(cached) or error_row()
 
-    content = response.content
-    content_type = response.headers.get("Content-Type", "")
-    text = extract_text(content, content_type)[:MAX_SOURCE_TEXT_CHARS]
+    try:
+        content = response.content
+        text = extract_text(content, response.headers.get("Content-Type", ""))[:MAX_SOURCE_TEXT_CHARS]
+    except Exception:  # noqa: BLE001 - a corrupt page/PDF must never crash a check (§5)
+        return _keep_good_content(cached) or error_row()
+
     return _store(
         url,
         content_hash=_sha256(content),
         fetch_status=EvidenceFetchStatus.FETCHED,
-        text=text,
+        text=text[:SOURCE_SNIPPET_MAX_CHARS],  # §3.2 stage 4: ~2,000 tokens per source
         fetched_at=now,
     )
 

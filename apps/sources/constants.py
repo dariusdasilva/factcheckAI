@@ -96,6 +96,10 @@ DEFAULT_EVIDENCE_DEPTH = "balanced"
 SOURCE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 # Cited-source text is capped before packing (same ~1 MB raw cap as the fetch guard).
 MAX_SOURCE_TEXT_CHARS = 1_000_000
+# §3.2 stage 4: ~2,000 tokens packed *per source* (chars/4 estimator), so one long
+# page can never crowd out all other hop-1/hop-2 evidence in the token budget.
+SOURCE_SNIPPET_MAX_TOKENS = 2_000
+SOURCE_SNIPPET_MAX_CHARS = SOURCE_SNIPPET_MAX_TOKENS * 4
 
 # Primary sources get a ranking boost (§3.2 stage 4): checking the original claim
 # beats re-reading another secondary summary.

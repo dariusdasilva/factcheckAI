@@ -4,14 +4,20 @@ AGENTS.md §5 (Chunk C): *"politeness limits are not optional performance tweaks
 they're a condition of being allowed to talk to Wikipedia's API at all. Any new
 fetch path goes through the shared rate-limited HTTP session."*
 
-This module is that session. C1–C3 (and the later source fetcher, C4) must obtain
-their HTTP client from here rather than calling ``requests`` directly, so the
-:data:`~apps.sources.constants.PER_HOST_MIN_INTERVAL_SECONDS` spacing, the
-Wikimedia User-Agent, ``maxlag=5`` and the content-type/size guards cannot be
-bypassed by accident.
+This module is that session. C1–C3 (and the C4 source fetcher + robots checker)
+must obtain their HTTP client from here rather than calling ``requests``
+directly, so the :data:`~apps.sources.constants.PER_HOST_MIN_INTERVAL_SECONDS`
+spacing, one-request-at-a-time-per-host, the Wikimedia User-Agent, ``maxlag=5``
+and the content-type/size guards cannot be bypassed by accident.
 
-The full C5 politeness test-suite extends this module; the limits themselves live
-in ``constants.py`` so they stay in one place.
+The limiter enforcing the limits is **process-global** (``DEFAULT_LIMITER``): one
+Django-Q2 worker calling :class:`PoliteSession` without arguments still shares
+the same per-host bookkeeping, which is what keeps concurrent checks polite. A
+caller may inject a limiter/session for tests; production always shares.
+
+Note for the doc reader: ARCHITECTURE.md's "HTTP/2 keep-alive" is approximated
+with a Python-``requests`` session (HTTP/1.1 keep-alive via one connection pool).
+Upgrading to ``httpx`` for real HTTP/2 would be transparent to callers.
 """
 
 from __future__ import annotations
@@ -34,6 +40,8 @@ from .constants import (
     USER_AGENT,
 )
 
+_STREAM_CHUNK_BYTES = 65_536
+
 
 class PolitenessError(RuntimeError):
     """Raised when a response violates the politeness contract.
@@ -47,11 +55,10 @@ class PolitenessError(RuntimeError):
 class RateLimiter:
     """Enforces per-host spacing *and* one request at a time per host.
 
-    ``slot(host)`` holds a per-host lock around the whole request, so two threads
-    (e.g. Django-Q2 workers) can never overlap requests to the same host, and the
-    :data:`~apps.sources.constants.PER_HOST_MIN_INTERVAL_SECONDS` spacing between
-    request starts is guaranteed. Different hosts use different locks and do not
-    block one another.
+    ``slot(host)`` holds a per-host lock around the whole request, so parallel
+    callers (e.g. Django-Q2 workers) can never overlap requests to the same host,
+    and the request-start spacing is guaranteed. Different hosts use different
+    locks and do not block one another.
 
     ``sleep`` is injectable so tests can run at zero wall-clock cost.
     """
@@ -90,13 +97,19 @@ class RateLimiter:
             return
 
 
+#: The process-global limiter every ``PoliteSession()`` shares (see module docstring).
+DEFAULT_LIMITER = RateLimiter()
+
+
 class PoliteSession:
     """A ``requests.Session`` wrapper that cannot be impolite.
 
     - reuses one connection pool (keep-alive) across the whole pipeline;
-    - throttles per host via :class:`RateLimiter`;
-    - sets the Wikimedia User-Agent on every request;
-    - enforces the content-type allowlist and the ~1 MB page cap.
+    - throttles per host via the shared :class:`RateLimiter`;
+    - sets the Wikimedia User-Agent on every request and never lets a per-request
+      header override it;
+    - streams every body (capped hosts down not megabytes before the guard fires)
+      and enforces the content-type allowlist and the ~1 MB page cap.
     """
 
     def __init__(
@@ -112,7 +125,7 @@ class PoliteSession:
         # Override unconditionally: requests' default UA is rejected by Wikimedia's
         # User-Agent policy, so a politeness session must always identify us.
         self.session.headers["User-Agent"] = USER_AGENT
-        self.limiter = limiter or RateLimiter()
+        self.limiter = limiter or DEFAULT_LIMITER
         self.timeout = timeout
         self.allowed_content_types = allowed_content_types
         self.max_bytes = max_bytes
@@ -128,20 +141,30 @@ class PoliteSession:
         headers: dict[str, str] | None = None,
         allow_pdf: bool = False,
     ) -> requests.Response:
-        """Throttled GET with content-type and size guards.
+        """Throttled, streamed GET with content-type and size guards.
 
         Raises :class:`PolitenessError` for a disallowed type or oversized body.
         HTTP status errors are left to the caller (``raise_for_status``) so the
         pipeline can degrade gracefully on 404 / 503 (ARCHITECTURE.md §5).
         """
+        effective_headers = self._effective_headers(headers)
         host = urlsplit(url).netloc
         with self.limiter.slot(host):
-            response = self.session.get(
-                url, params=params, headers=headers, timeout=self.timeout
+            streamed = self.session.get(
+                url,
+                params=params,
+                headers=effective_headers,
+                timeout=self.timeout,
+                stream=True,
             )
-        self._check_content_type(response, allow_pdf=allow_pdf)
-        self._check_size(response)
-        return response
+            try:
+                self._check_content_type(streamed, allow_pdf=allow_pdf)
+                self._declared_size(streamed)
+                self._read_capped(streamed)
+                self._check_size(streamed)
+            finally:
+                streamed.close()
+        return streamed
 
     def get_json(self, url: str, *, params: dict[str, object] | None = None) -> object:
         """Throttled GET that raises for HTTP errors and returns parsed JSON."""
@@ -149,7 +172,45 @@ class PoliteSession:
         response.raise_for_status()
         return response.json()
 
-    # -- guards -----------------------------------------------------------------------
+    # -- politeness helpers -----------------------------------------------------------
+    def _effective_headers(self, headers: dict[str, str] | None) -> dict[str, str] | None:
+        """Merge per-request headers, but never let them replace the session UA."""
+        if not headers:
+            return None
+        merged = {key: value for key, value in headers.items() if key.lower() != "user-agent"}
+        return merged or None
+
+    def _declared_size(self, response: requests.Response) -> None:
+        """Reject an oversized declared body before downloading it."""
+        declared = response.headers.get("Content-Length")
+        if declared is None:
+            return
+        try:
+            declared_len = int(declared)
+        except ValueError:
+            return
+        if declared_len > self.max_bytes:
+            raise PolitenessError(
+                f"Refusing {declared_len} byte body from {response.url!r} "
+                f"(cap ~{self.max_bytes} bytes)"
+            )
+
+    def _read_capped(self, response: requests.Response) -> None:
+        """Stream the body, buffering at most ``max_bytes``, then expose it to callers.
+
+        ``response._content`` is assigned (as ``requests`` itself does) so callers
+        can use ``response.content``/``.json()`` after the streamed read closes.
+        """
+        buffered = bytearray()
+        for chunk in response.iter_content(chunk_size=_STREAM_CHUNK_BYTES):
+            buffered.extend(chunk)
+            if len(buffered) > self.max_bytes:
+                raise PolitenessError(
+                    f"Refusing body from {response.url!r}: exceeded ~{self.max_bytes} "
+                    "bytes mid-stream (cap ~1 MB, §6)"
+                )
+        response._content = bytes(buffered)
+
     def _check_content_type(self, response: requests.Response, *, allow_pdf: bool) -> None:
         raw = response.headers.get("Content-Type")
         if not raw:
@@ -166,16 +227,6 @@ class PoliteSession:
             )
 
     def _check_size(self, response: requests.Response) -> None:
-        declared = response.headers.get("Content-Length")
-        if declared is not None:
-            try:
-                if int(declared) > self.max_bytes:
-                    raise PolitenessError(
-                        f"Refusing {declared} byte body from {response.url!r} "
-                        f"(cap ~{self.max_bytes} bytes)"
-                    )
-            except ValueError:
-                pass
         if len(response.content) > self.max_bytes:
             raise PolitenessError(
                 f"Refusing {len(response.content)} byte body from {response.url!r} "

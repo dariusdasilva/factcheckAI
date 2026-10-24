@@ -129,6 +129,13 @@ def test_store_evidence_persists_bundle():
     stored = Evidence.objects.filter(check_run=check_run)
     assert stored.count() == 2
     assert {row.hop for row in stored} == {EvidenceHop.WIKI, EvidenceHop.CITED_SOURCE}
+    # Snippets are stored with their label preserved as a prefix (model help_text
+    # "Labelled snippet"); the DB has no label column (AGENTS.md §4.5: the packer
+    # mints ids in memory for the same run).
+    assert sorted(row.snippet for row in stored) == [
+        "[S1] There is no cure for the common cold.",
+        "[W1] Coffee is a brewed drink.",
+    ]
 
 
 @pytest.mark.django_db

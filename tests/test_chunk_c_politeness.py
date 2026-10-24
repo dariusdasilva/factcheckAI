@@ -13,6 +13,7 @@ import threading
 import time
 
 import pytest
+import requests
 
 from apps.sources.constants import DEFAULT_TIMEOUT_SECONDS, USER_AGENT
 from apps.sources.politeness import PolitenessError, PoliteSession, RateLimiter
@@ -70,7 +71,7 @@ def test_default_timeout_is_ten_seconds():
     assert PoliteSession().timeout == DEFAULT_TIMEOUT_SECONDS == 10.0
 
 
-def test_get_forwards_the_timeout(monkeypatch):
+def test_get_forwards_the_timeout_and_streaming(monkeypatch):
     session = _fast_session()
     captured: dict[str, object] = {}
 
@@ -82,6 +83,12 @@ def test_get_forwards_the_timeout(monkeypatch):
         def raise_for_status(self):
             return None
 
+        def iter_content(self, chunk_size=None):
+            yield self.content
+
+        def close(self):
+            return None
+
     def _fake_get(url, **kwargs):
         captured.update(kwargs)
         return _FakeResponse()
@@ -90,6 +97,8 @@ def test_get_forwards_the_timeout(monkeypatch):
     session.get("https://example.com/x")
 
     assert captured["timeout"] == 10.0
+    # Bodies are streamed so oversized pages are cut mid-download, not after.
+    assert captured["stream"] is True
 
 
 def test_session_sets_wikimedia_user_agent():
@@ -160,3 +169,53 @@ def test_session_rejects_oversized_page(requests_mock):
 
     with pytest.raises(PolitenessError):
         _fast_session(max_bytes=5).get("https://example.com/big")
+
+
+def test_oversized_page_is_cut_midstream_not_downloaded_whole(monkeypatch):
+    # No declared Content-Length: the guard must fire while streaming, so the
+    # bytes past the cap are never consumed (§6 ~1MB cap is a transmission-
+    # level guarantee, not just a post-download check).
+    session = _fast_session(max_bytes=8)
+    iterated: list[int] = []
+
+    class _StreamedResponse:
+        headers = {"Content-Type": "text/html"}
+        url = "https://example.com/trickling"
+
+        def iter_content(self, chunk_size=None):
+            for index, chunk in enumerate([b"a" * 5, b"b" * 5, b"c" * 5]):
+                iterated.append(index)
+                yield chunk
+
+        def close(self):
+            return None
+
+    def _fake_get(url, **kwargs):
+        assert kwargs["stream"] is True
+        return _StreamedResponse()
+
+    monkeypatch.setattr(session.session, "get", _fake_get)
+
+    with pytest.raises(PolitenessError):
+        session.get("https://example.com/trickling")
+
+    # The third chunk (past the cap) was never read off the wire.
+    assert iterated == [0, 1]
+
+
+def test_per_request_headers_cannot_override_the_user_agent(requests_mock):
+    requests_mock.get("https://example.com/x", json={})
+
+    _fast_session().get("https://example.com/x", headers={"User-Agent": "evil-bot/1.0"})
+
+    assert requests_mock.last_request.headers["User-Agent"] == USER_AGENT
+
+
+def test_default_limiter_is_process_global():
+    # Two independently-constructed PoliteSessions (e.g. two concurrent Django-Q2
+    # checks) must share the same per-host bookkeeping (AGENTS.md §5 "shared
+    # rate-limited HTTP session").
+    from apps.sources.politeness import DEFAULT_LIMITER
+
+    assert PoliteSession().limiter is DEFAULT_LIMITER
+    assert PoliteSession(session=requests.Session()).limiter is DEFAULT_LIMITER

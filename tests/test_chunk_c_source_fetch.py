@@ -103,6 +103,83 @@ def test_extract_text_routes_pdf(monkeypatch):
     assert extract_text(b"%PDF-1.4 fake", "application/pdf") == "PDF BODY"
 
 
+@pytest.mark.django_db
+def test_corrupt_pdf_is_error_row_not_crash(source_pages, requests_mock, fast_session, monkeypatch):
+    # §5 verbatim: "paywalls, 403, PDF parse failure" are recorded with
+    # fetch_status, never raised through the check.
+    url = "https://www.cdc.gov/broken.pdf"
+    requests_mock.get(
+        url, content=b"%PDF-1.4 not really a pdf", headers={"Content-Type": "application/pdf"}
+    )
+
+    def broken_parser(_data):
+        raise RuntimeError("corrupt pdf")
+
+    monkeypatch.setattr("apps.sources.source_fetch.extract_pdf_text", broken_parser)
+
+    row = fetch_source(_citation(url, "cdc.gov"), session=fast_session)
+
+    assert row.fetch_status == EvidenceFetchStatus.ERROR
+    assert row.text_extract == ""
+
+
+@pytest.mark.django_db
+def test_pdfs_allowed_for_primary_sources_only(source_pages, requests_mock, fast_session, monkeypatch):
+    monkeypatch.setattr(
+        "apps.sources.source_fetch.extract_pdf_text", lambda _data: "PDF BODY"
+    )
+    primary_url = "https://www.cdc.gov/report.pdf"
+    non_primary_url = "https://www.webmd.com/report.pdf"
+    for url in (primary_url, non_primary_url):
+        requests_mock.get(url, content=b"%PDF-1.4 body", headers={"Content-Type": "application/pdf"})
+
+    primary = fetch_source(_citation(primary_url, "cdc.gov"), session=fast_session)
+    non_primary = fetch_source(_citation(non_primary_url, "webmd.com"), session=fast_session)
+
+    assert primary.fetch_status == EvidenceFetchStatus.FETCHED
+    assert primary.text_extract == "PDF BODY"
+    # A non-primary host serving a PDF is refused (politeness guard) → error row.
+    assert non_primary.fetch_status == EvidenceFetchStatus.ERROR
+    assert non_primary.text_extract == ""
+
+
+@pytest.mark.django_db
+def test_per_source_text_is_capped_to_snippet_budget(source_pages, requests_mock, fast_session):
+    # §3.2 stage 4: ~2,000 tokens packed *per source* so one long page cannot
+    # crowd the other hop-1/hop-2 evidence out of the token budget.
+    from apps.sources.constants import SOURCE_SNIPPET_MAX_CHARS
+
+    url = "https://www.cdc.gov/huge.html"
+    requests_mock.get(
+        url,
+        text="<html><body><p>" + ("cold remedy prose. " * 1200) + "</p></body></html>",
+        headers={"Content-Type": "text/html; charset=utf-8"},
+    )
+
+    row = fetch_source(_citation(url, "cdc.gov"), session=fast_session)
+
+    assert row.fetch_status == EvidenceFetchStatus.FETCHED
+    assert 0 < len(row.text_extract) <= SOURCE_SNIPPET_MAX_CHARS
+
+
+@pytest.mark.django_db
+def test_failed_refetch_keeps_prior_good_text(source_pages, requests_mock, fast_session):
+    citation = _citation(WEBMD_URL, "webmd.com")
+
+    first = fetch_source(citation, session=fast_session)
+    good_text = first.text_extract
+
+    # After the TTL lapses the page starts failing (e.g. 403 paywall): the
+    # 7-day-old extraction must not be wiped by the new error status.
+    requests_mock.get(WEBMD_URL, status_code=403)
+    stale = fetch_source(citation, session=fast_session, max_age_seconds=0)
+
+    assert stale.pk == first.pk
+    assert stale.fetch_status == EvidenceFetchStatus.FETCHED
+    assert stale.text_extract == good_text
+    assert Source.objects.get(url=WEBMD_URL).text_extract == good_text
+
+
 def test_is_primary_source():
     assert is_primary_source("https://www.cdc.gov/common-cold/")
     assert is_primary_source("https://www.hsph.harvard.edu/news/coffee/")

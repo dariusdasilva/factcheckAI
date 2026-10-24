@@ -11,15 +11,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .discovery import ArticleRef
-from .wiki_client import WikiClient
+from .wiki_client import WikiClient, WikiUnavailableError
 
 
 @dataclass(frozen=True)
 class WikiEvidence:
     """Hop-1 evidence: a snippet drawn from a Wikipedia article.
 
-    ``label`` is the citation id used by the prompt (``W1``, ``W2``, …); the model
-    is only allowed to cite ids we supplied (AGENTS.md §4.5).
+    ``label`` is a pre-packing *ordinal* (``W1``, ``W2``… in article order). The
+    canonical ``[W#]``/``[S#]`` ids the model may cite are assigned by
+    :meth:`apps.sources.packer.pack_evidence` — the single label authority
+    (AGENTS.md §4.5) — so downstream code must consume
+    :class:`EvidenceBundle` rather than this field.
     """
 
     label: str
@@ -56,16 +59,24 @@ def read_articles(
 
     A missing summary or extract degrades to the discovery snippet rather than
     dropping the article, so a partially-available Wikipedia still yields evidence.
+    Wikipedia endpoint failures (§5) degrade *per article* — the surviving
+    summaries (or the search snippets) are kept, not thrown away.
     """
     client = client or WikiClient()
     if not articles:
         return []
 
-    extracts = _extract_map(client.extracts([article.title for article in articles]))
+    try:
+        extracts = _extract_map(client.extracts([article.title for article in articles]))
+    except WikiUnavailableError:
+        extracts = {}  # keep per-article degradation, don't lose batch
 
     evidence: list[WikiEvidence] = []
     for index, article in enumerate(articles, start=1):
-        summary = client.summary(article.title)
+        try:
+            summary = client.summary(article.title)
+        except WikiUnavailableError:
+            summary = {}
         summary_extract = summary.get("extract") or ""
         extract_text = extracts.get(article.title) or ""
         # Prefer the longer of the two bodies of prose; fall back to the search snippet.

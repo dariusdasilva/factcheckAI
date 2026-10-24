@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 
 from .constants import ARCHIVE_HOSTS, SOCIAL_HOSTS, WIKI_MIRROR_HOSTS
 from .discovery import ArticleRef
-from .wiki_client import WikiClient
+from .wiki_client import WikiClient, WikiUnavailableError
 
 
 @dataclass(frozen=True)
@@ -121,7 +121,11 @@ def extract_citations(
         return []
 
     titles = [article.title for article in articles]
-    extlinks = client.extlinks(titles) if titles else {}
+    try:
+        extlinks = client.extlinks(titles) if titles else {}
+    except WikiUnavailableError:
+        # §5: degrade to reference parsing / article HTML rather than discarding hop 2.
+        extlinks = {}
 
     by_domain: dict[str, _DomainAccumulator] = {}
     for article in articles:
