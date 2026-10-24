@@ -81,7 +81,10 @@ DATABASES = {
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     # Token auth for the extension; session auth for the web app (§2.1).
+    # ApiKeyAuthentication first so issued `fcai_…` keys authenticate (the
+    # extension path); it defers to the others for non-prefixed credentials.
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "apps.accounts.authentication.ApiKeyAuthentication",
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.TokenAuthentication",
     ],

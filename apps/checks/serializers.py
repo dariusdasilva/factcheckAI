@@ -7,7 +7,15 @@ is capped in characters; scrubbing/limits live in B's template layer.
 
 from rest_framework import serializers
 
+from apps.checks.contracts import (
+    DEFAULT_FAIL_RETRY_AFTER_S,
+    DEFAULT_PROVIDERS_TRIED,
+    FAIL_STATE_DETAIL,
+)
 from apps.checks.models import CheckRun, CheckRunStatus, Evidence
+
+# AuditLog event name that carries the §2.2 fail-state envelope.
+FAIL_STATE_EVENT = "fail_state_entered"
 
 MAX_CLAIM_CHARS = 4000
 
@@ -95,27 +103,41 @@ class CheckRunResultSerializer(serializers.ModelSerializer):
             "finished_at",
         )
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # One lookup per run per serialization: the three fail-state fields all
+        # read the same AuditLog row (audit finding #2).
+        self._fail_state_payloads: dict[int, dict] = {}
+
     def latest_fail_state_payload(self, run: CheckRun) -> dict:
-        log = run.audit_logs.filter(event="fail_state_entered").first()
-        if log and isinstance(log.json_payload, dict):
-            return log.json_payload
-        return {}
+        """The newest `fail_state_entered` audit payload for this run, cached.
 
-    def get_detail(self, run: CheckRun) -> str:
-        from apps.checks.contracts import FAIL_STATE_DETAIL
+        Only fail_state runs have one; every other status short-circuits before
+        this is called, so progress/ok polls issue no audit query at all.
+        """
+        if run.pk not in self._fail_state_payloads:
+            log = run.audit_logs.filter(event=FAIL_STATE_EVENT).first()
+            payload = log.json_payload if log else None
+            self._fail_state_payloads[run.pk] = (
+                payload if isinstance(payload, dict) else {}
+            )
+        return self._fail_state_payloads[run.pk]
 
+    def get_detail(self, run: CheckRun) -> str | None:
+        if run.status != CheckRunStatus.FAIL_STATE:
+            return None
         return self.latest_fail_state_payload(run).get("detail", FAIL_STATE_DETAIL)
 
-    def get_retry_after(self, run: CheckRun) -> int:
-        from apps.checks.contracts import DEFAULT_FAIL_RETRY_AFTER_S
-
+    def get_retry_after(self, run: CheckRun) -> int | None:
+        if run.status != CheckRunStatus.FAIL_STATE:
+            return None
         return self.latest_fail_state_payload(run).get(
             "retry_after", DEFAULT_FAIL_RETRY_AFTER_S
         )
 
-    def get_providers_tried(self, run: CheckRun) -> list:
-        from apps.checks.contracts import DEFAULT_PROVIDERS_TRIED
-
+    def get_providers_tried(self, run: CheckRun) -> list | None:
+        if run.status != CheckRunStatus.FAIL_STATE:
+            return None
         payload = self.latest_fail_state_payload(run).get("providers_tried")
         if payload:
             return payload
