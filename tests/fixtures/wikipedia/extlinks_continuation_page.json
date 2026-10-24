@@ -1,0 +1,23 @@
+{
+  "query": {
+    "pages": [
+      {
+        "pageid": 1234,
+        "ns": 0,
+        "title": "Coffee",
+        "extlinks": [
+          {"url": "https://www.hsph.harvard.edu/news/coffee/"},
+          {"url": "https://archive.ph/abc123"}
+        ]
+      },
+      {
+        "pageid": 5678,
+        "ns": 0,
+        "title": "Common cold",
+        "extlinks": [
+          {"url": "https://www.cdc.gov/common-cold/"}
+        ]
+      }
+    ]
+  }
+}
