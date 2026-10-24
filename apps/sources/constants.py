@@ -79,3 +79,37 @@ WIKI_MIRROR_HOSTS = frozenset(
     }
 )
 EXTLINKS_MAX_PAGES = 5  # safety cap on continuation loops
+
+# --- Source fetch / cache (§3.2 stage 4, §5) ------------------------------------------
+# Hop-2 fan-out is a single user-facing knob: fast=0, balanced=3, deep=5.
+EVIDENCE_DEPTH_OPTIONS = {"fast": 0, "balanced": 3, "deep": 5}
+DEFAULT_EVIDENCE_DEPTH = "balanced"
+# Articles and cited sources are cached for 7 days; repeated checks cost no network.
+SOURCE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+# Cited-source text is capped before packing (same ~1 MB raw cap as the fetch guard).
+MAX_SOURCE_TEXT_CHARS = 1_000_000
+
+# Primary sources get a ranking boost (§3.2 stage 4): checking the original claim
+# beats re-reading another secondary summary.
+PRIMARY_SOURCE_SUFFIXES = (
+    ".gov",
+    ".gov.uk",
+    ".ac.uk",
+    ".edu",
+    ".mil",
+    ".int",
+)
+PRIMARY_SOURCE_HOSTS = frozenset(
+    {
+        "doi.org",
+        "dx.doi.org",
+        "ncbi.nlm.nih.gov",
+        "pubmed.ncbi.nlm.nih.gov",
+        "who.int",
+        "un.org",
+    }
+)
+
+# --- Evidence packer (§3.2 stage 5) ---------------------------------------------------
+DEFAULT_TOKEN_BUDGET = 6000
+

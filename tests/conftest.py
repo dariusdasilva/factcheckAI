@@ -39,6 +39,33 @@ def wiki_client() -> WikiClient:
     return WikiClient(PoliteSession(limiter=limiter))
 
 
+@pytest.fixture
+def fast_session() -> PoliteSession:
+    """A dignified-but-impatient session for tests: no rate-limit sleeping."""
+    return PoliteSession(limiter=RateLimiter(min_interval_seconds=0.0, sleep=lambda _s: None))
+
+
+# Cited sources referenced by ``extlinks_*`` fixtures → recorded hop-2 pages.
+SOURCE_PAGES = {
+    "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC123/": "source_ncbi.html",
+    "https://www.hsph.harvard.edu/news/coffee/": "source_harvard.html",
+    "https://www.cdc.gov/common-cold/": "source_cdc.html",
+    "https://www.webmd.com/diet/health-benefits-coffee": "source_webmd.html",
+}
+
+
+@pytest.fixture
+def source_pages(requests_mock):
+    """Register the recorded hop-2 HTML pages for cited sources."""
+    for url, fixture in SOURCE_PAGES.items():
+        requests_mock.get(
+            url,
+            text=load_text_fixture(fixture),
+            headers={"Content-Type": "text/html; charset=utf-8"},
+        )
+    return requests_mock
+
+
 def _api_dispatch(request, _context):
     """Route an ``action=query`` request to the matching recorded fixture."""
     query = request.qs
@@ -62,4 +89,5 @@ def wiki_api(requests_mock):
     requests_mock.get(
         SUMMARY_BASE + "Common_cold", json=load_fixture("summary_common_cold.json")
     )
+    requests_mock.get(SUMMARY_BASE + "Caffeine", json=load_fixture("summary_caffeine.json"))
     return requests_mock

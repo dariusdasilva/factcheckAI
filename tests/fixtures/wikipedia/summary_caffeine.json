@@ -1,0 +1,9 @@
+{
+  "type": "standard",
+  "title": "Caffeine",
+  "description": "Central nervous system stimulant",
+  "extract": "Caffeine is a central nervous system stimulant of the methylxanthine class, found in coffee, tea and other beverages.",
+  "content_urls": {
+    "desktop": {"page": "https://en.wikipedia.org/wiki/Caffeine"}
+  }
+}

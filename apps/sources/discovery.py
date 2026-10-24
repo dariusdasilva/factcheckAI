@@ -57,15 +57,28 @@ def extract_keywords(claim: str, *, max_keywords: int = MAX_KEYWORDS) -> list[st
     """
     keywords: list[str] = []
     seen: set[str] = set()
-    for raw in claim.split():
-        token = "".join(ch for ch in raw.lower() if ch.isalnum() or ch == "-").strip("-")
-        if len(token) < MIN_KEYWORD_LENGTH or token in _STOPWORDS or token in seen:
+    for token in tokenize(claim):
+        if token in seen:
             continue
         seen.add(token)
         keywords.append(token)
         if len(keywords) >= max_keywords:
             break
     return keywords
+
+
+def tokenize(text: str) -> list[str]:
+    """Lowercase alphanumeric tokens, keeping duplicates (for BM25 ranking).
+
+    Stopwords and tokens shorter than :data:`MIN_KEYWORD_LENGTH` are dropped.
+    """
+    tokens: list[str] = []
+    for raw in text.split():
+        token = "".join(ch for ch in raw.lower() if ch.isalnum() or ch == "-").strip("-")
+        if len(token) < MIN_KEYWORD_LENGTH or token in _STOPWORDS:
+            continue
+        tokens.append(token)
+    return tokens
 
 
 def build_search_query(claim: str, *, query_builder: Callable[[str], str] | None = None) -> str:
