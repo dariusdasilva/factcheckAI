@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -44,11 +45,13 @@ class PolitenessError(RuntimeError):
 
 @dataclass
 class RateLimiter:
-    """Enforces a minimum interval between requests to the same host.
+    """Enforces per-host spacing *and* one request at a time per host.
 
-    State is kept per host so different hosts don't block one another, but the
-    lock serialises the bookkeeping (the Django-Q2 worker pool may call from
-    several threads; we still keep concurrency to one request per host).
+    ``slot(host)`` holds a per-host lock around the whole request, so two threads
+    (e.g. Django-Q2 workers) can never overlap requests to the same host, and the
+    :data:`~apps.sources.constants.PER_HOST_MIN_INTERVAL_SECONDS` spacing between
+    request starts is guaranteed. Different hosts use different locks and do not
+    block one another.
 
     ``sleep`` is injectable so tests can run at zero wall-clock cost.
     """
@@ -56,10 +59,21 @@ class RateLimiter:
     min_interval_seconds: float = PER_HOST_MIN_INTERVAL_SECONDS
     sleep: Callable[[float], None] = time.sleep
     _last_call: dict[str, float] = field(default_factory=dict)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _host_locks: dict[str, threading.Lock] = field(default_factory=dict)
+    _meta_lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def wait(self, host: str) -> None:
-        with self._lock:
+    def _lock_for(self, host: str) -> threading.Lock:
+        with self._meta_lock:
+            lock = self._host_locks.get(host)
+            if lock is None:
+                lock = threading.Lock()
+                self._host_locks[host] = lock
+            return lock
+
+    @contextmanager
+    def slot(self, host: str) -> Iterator[None]:
+        """Hold the host slot across a request (concurrency 1 + start spacing)."""
+        with self._lock_for(host):
             now = time.monotonic()
             last = self._last_call.get(host)
             if last is not None:
@@ -68,6 +82,12 @@ class RateLimiter:
                     self.sleep(remaining)
                     now = time.monotonic()
             self._last_call[host] = now
+            yield
+
+    def wait(self, host: str) -> None:
+        """Compatibility wrapper: take and release the host slot immediately."""
+        with self.slot(host):
+            return
 
 
 class PoliteSession:
@@ -115,8 +135,10 @@ class PoliteSession:
         pipeline can degrade gracefully on 404 / 503 (ARCHITECTURE.md §5).
         """
         host = urlsplit(url).netloc
-        self.limiter.wait(host)
-        response = self.session.get(url, params=params, headers=headers, timeout=self.timeout)
+        with self.limiter.slot(host):
+            response = self.session.get(
+                url, params=params, headers=headers, timeout=self.timeout
+            )
         self._check_content_type(response, allow_pdf=allow_pdf)
         self._check_size(response)
         return response

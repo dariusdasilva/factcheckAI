@@ -28,6 +28,7 @@ from .packer import (
 )
 from .pipeline import EvidencePipelineResult, run_evidence_pipeline
 from .politeness import PolitenessError, PoliteSession, RateLimiter
+from .robots import RobotsChecker
 from .source_fetch import SourceEvidence, fetch_source, fetch_sources, is_primary_source
 from .wiki_client import WikiClient, WikiUnavailableError
 
@@ -40,6 +41,7 @@ __all__ = [
     "PoliteSession",
     "PolitenessError",
     "RateLimiter",
+    "RobotsChecker",
     "SourceEvidence",
     "WikiClient",
     "WikiEvidence",

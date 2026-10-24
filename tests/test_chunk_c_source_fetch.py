@@ -29,26 +29,22 @@ def _citation(url: str, domain: str) -> CitedSource:
 
 
 @pytest.mark.django_db
-def test_cache_hit_does_not_refetch(requests_mock, fast_session):
-    requests_mock.get(
-        WEBMD_URL,
-        text=load_text_fixture("source_webmd.html"),
-        headers={"Content-Type": "text/html; charset=utf-8"},
-    )
+def test_cache_hit_does_not_refetch(source_pages, requests_mock, fast_session):
     citation = _citation(WEBMD_URL, "webmd.com")
 
     first = fetch_source(citation, session=fast_session)
     second = fetch_source(citation, session=fast_session)
 
     assert first.pk == second.pk
-    assert requests_mock.call_count == 1  # second call served from the cache
+    page_calls = [r for r in requests_mock.request_history if r.url == WEBMD_URL]
+    assert len(page_calls) == 1  # second call served from the cache
     row = Source.objects.get(url=WEBMD_URL)
     assert row.fetch_status == EvidenceFetchStatus.FETCHED
     assert "antioxidants" in row.text_extract
 
 
 @pytest.mark.django_db
-def test_failed_fetch_is_cached_as_error_not_raised(requests_mock, fast_session):
+def test_failed_fetch_is_cached_as_error_not_raised(source_pages, requests_mock, fast_session):
     url = "https://www.webmd.com/paywalled"
     requests_mock.get(url, status_code=403)
     citation = _citation(url, "webmd.com")
@@ -59,7 +55,8 @@ def test_failed_fetch_is_cached_as_error_not_raised(requests_mock, fast_session)
     assert row.text_extract == ""
     # A cached failure is not retried either — no repeated hammering of a dead URL.
     fetch_source(citation, session=fast_session)
-    assert requests_mock.call_count == 1
+    page_calls = [r for r in requests_mock.request_history if r.url == url]
+    assert len(page_calls) == 1
 
 
 @pytest.mark.django_db

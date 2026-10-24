@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -30,6 +31,20 @@ def load_fixture(name: str) -> dict:
 
 def load_text_fixture(name: str) -> str:
     return (FIXTURE_DIR / name).read_text(encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_caches():
+    """Reset Django's cache per test.
+
+    The wiki response cache and robots cache live in Django's cache framework
+    (LocMem in dev/CI), which is process-global — without a per-test reset a
+    cached payload could leak across tests and hide the fixture replays.
+    """
+    from django.core.cache import cache
+
+    cache.clear()
+    yield
 
 
 @pytest.fixture
@@ -53,15 +68,23 @@ SOURCE_PAGES = {
     "https://www.webmd.com/diet/health-benefits-coffee": "source_webmd.html",
 }
 
+ROBOTS_ALLOW_ALL = "User-agent: *\nDisallow:\n"
+
 
 @pytest.fixture
 def source_pages(requests_mock):
-    """Register the recorded hop-2 HTML pages for cited sources."""
+    """Register recorded hop-2 pages *and* permissive robots.txt per host."""
     for url, fixture in SOURCE_PAGES.items():
         requests_mock.get(
             url,
             text=load_text_fixture(fixture),
             headers={"Content-Type": "text/html; charset=utf-8"},
+        )
+        host = urlsplit(url).netloc
+        requests_mock.get(
+            f"https://{host}/robots.txt",
+            text=ROBOTS_ALLOW_ALL,
+            headers={"Content-Type": "text/plain; charset=utf-8"},
         )
     return requests_mock
 

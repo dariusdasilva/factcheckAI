@@ -3,11 +3,14 @@
 "Rate-limiter unit test" (WORK_CHUNKS.md, Chunk C). C1–C3 and C4 all fetch through
 :class:`~apps.sources.politeness.PoliteSession`, so these assert every non-negotiable
 limit from ARCHITECTURE.md §3.2/§6: the Wikimedia User-Agent, ``maxlag=5`` on every
-``action=query`` call, 1 req/s per host, a 10 s timeout, and the content-type /
-page-size guards.
+``action=query`` call, 1 req/s per host, one request at a time per host, a 10 s
+timeout, and the content-type / page-size guards.
 """
 
 from __future__ import annotations
+
+import threading
+import time
 
 import pytest
 
@@ -25,16 +28,42 @@ def test_rate_limiter_spaces_requests_per_host():
     slept: list[float] = []
     limiter = RateLimiter(min_interval_seconds=1.0, sleep=slept.append)
 
-    limiter.wait("a.example.com")
+    with limiter.slot("a.example.com"):
+        pass
     assert slept == []
 
-    limiter.wait("a.example.com")
+    with limiter.slot("a.example.com"):
+        pass
     assert len(slept) == 1
     assert slept[0] > 0
 
     # A different host is not blocked by the first host's cooldown.
-    limiter.wait("b.example.com")
+    with limiter.slot("b.example.com"):
+        pass
     assert len(slept) == 1
+
+
+def test_slot_serializes_concurrent_requests_to_same_host():
+    order: list[str] = []
+    limiter = RateLimiter(min_interval_seconds=0.0, sleep=lambda _s: None)
+
+    def work(tag: str) -> None:
+        with limiter.slot("shared.example"):
+            order.append(f"{tag}:enter")
+            time.sleep(0.02)
+            order.append(f"{tag}:exit")
+
+    threads = [threading.Thread(target=work, args=(tag,)) for tag in ("one", "two", "three")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # Each worker's enter/exit must stay adjacent: no interleaved requests.
+    for index in range(0, len(order), 2):
+        enter_tag = order[index].split(":")[0]
+        assert order[index].endswith(":enter")
+        assert order[index + 1] == f"{enter_tag}:exit"
 
 
 def test_default_timeout_is_ten_seconds():

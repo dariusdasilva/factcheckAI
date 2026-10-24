@@ -139,7 +139,7 @@ def pack_evidence(
         snippet = candidates[index]["snippet"]
         tokens = estimate_tokens(snippet)
         if used_tokens + tokens <= token_budget:
-            candidates[index]["snippet"] = snippet
+            pass
         elif not selected:
             # Always keep at least one snippet; truncate it to fit the budget.
             snippet = _truncate_to_tokens(snippet, token_budget)

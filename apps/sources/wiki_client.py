@@ -1,25 +1,41 @@
 """Low-level MediaWiki / Wikimedia REST client used by the C1–C3 stages.
 
 All requests go through a :class:`~apps.sources.politeness.PoliteSession`, and
-every ``action=query`` call carries ``maxlag=5``. The client returns *raw parsed
-JSON* (or aggregated structures); the stages in ``discovery`` / ``article_read``
-/ ``citations`` decide how to interpret it. Keeping the wire layer dumb means the
-stages can be exercised against recorded fixtures without a network.
+every ``action=query`` call carries ``maxlag=5``. Responses are cached per
+ARCHITECTURE.md §3.2 ("everything cached"): search results 24 h, article data
+(extracts, summaries, external links) 7 days — so repeated checks on the same
+topic cost the Wikimedia network nothing after the first pass. Error responses
+are never cached; they surface as :class:`WikiUnavailableError` so the pipeline
+can degrade (§5).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Callable
 from urllib.parse import quote
 
 import requests
 
 from .constants import (
+    ARTICLE_CACHE_TTL_SECONDS,
     EXTLINKS_MAX_PAGES,
     MAXLAG_SECONDS,
+    SEARCH_CACHE_TTL_SECONDS,
     WIKI_API_ENDPOINT,
     WIKI_REST_SUMMARY_ENDPOINT,
 )
 from .politeness import PoliteSession
+
+_CACHE_PREFIX = "factcheckai:wiki:"
+
+
+def _default_cache():
+    """Lazily resolved so this module imports without a configured Django."""
+    from django.core.cache import cache
+
+    return cache
 
 
 class WikiUnavailableError(RuntimeError):
@@ -33,8 +49,36 @@ class WikiUnavailableError(RuntimeError):
 class WikiClient:
     """Thin typed wrapper over the MediaWiki action API and the REST summary API."""
 
-    def __init__(self, session: PoliteSession | None = None) -> None:
+    def __init__(self, session: PoliteSession | None = None, *, cache=None) -> None:
         self.session = session or PoliteSession()
+        self._cache = cache
+
+    @property
+    def cache(self):
+        return self._cache if self._cache is not None else _default_cache()
+
+    # -- caching ----------------------------------------------------------------------
+    @staticmethod
+    def _cache_key(url: str, params: dict[str, object] | None) -> str:
+        blob = json.dumps(params or {}, sort_keys=True, default=str)
+        digest = hashlib.sha256(f"{url}|{blob}".encode()).hexdigest()
+        return _CACHE_PREFIX + digest
+
+    def _cached(self, key: str, ttl: int, fetch: Callable[[], dict], *, cache_empty: bool = True) -> dict:
+        """Return cached payload or fetch-and-store. Errors propagate uncached.
+
+        ``cache_empty=False`` stores nothing when the fetch yields ``{}`` (used by
+        ``summary``, where an empty mapping means "page missing right now" and
+        must be re-checked, not re-served, on the next pass). The other endpoints
+        treat empty results as meaningful and cache them.
+        """
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+        payload = fetch()
+        if payload or cache_empty:
+            self.cache.set(key, payload, ttl)
+        return payload
 
     # -- action=query primitives ------------------------------------------------------
     def _api_get(self, params: dict[str, object]) -> dict:
@@ -53,7 +97,7 @@ class WikiClient:
         return payload
 
     def search(self, query: str, *, limit: int) -> dict:
-        """``list=search`` — return the raw search payload (§3.2 stage 1)."""
+        """``list=search`` — cached 24 h (§3.2 stage 1)."""
         params: dict[str, object] = {
             "action": "query",
             "list": "search",
@@ -64,10 +108,11 @@ class WikiClient:
             "formatversion": 2,
             "maxlag": MAXLAG_SECONDS,
         }
-        return self._api_get(params)
+        key = self._cache_key(WIKI_API_ENDPOINT, params)
+        return self._cached(key, SEARCH_CACHE_TTL_SECONDS, lambda: self._api_get(params))
 
     def extracts(self, titles: list[str]) -> dict:
-        """``prop=extracts`` (plaintext intro) for a batch of article titles."""
+        """``prop=extracts`` (plaintext intro) for a batch of titles — cached 7 d."""
         params: dict[str, object] = {
             "action": "query",
             "prop": "extracts",
@@ -79,15 +124,16 @@ class WikiClient:
             "formatversion": 2,
             "maxlag": MAXLAG_SECONDS,
         }
-        return self._api_get(params)
+        key = self._cache_key(WIKI_API_ENDPOINT, params)
+        return self._cached(key, ARTICLE_CACHE_TTL_SECONDS, lambda: self._api_get(params))
 
     def extlinks(self, titles: list[str], *, max_pages: int = EXTLINKS_MAX_PAGES) -> dict[str, list[str]]:
         """``prop=extlinks`` with continuation — ``{article_title: [external_url, ...]}``.
 
         External links include both "External links" sections and references, which
-        is exactly the hop-2 candidate set we want (§3.2 stage 3).
+        is exactly the hop-2 candidate set we want (§3.2 stage 3). The aggregated
+        result is cached 7 d keyed on the requested titles.
         """
-        collected: dict[str, list[str]] = {}
         params: dict[str, object] = {
             "action": "query",
             "prop": "extlinks",
@@ -97,6 +143,15 @@ class WikiClient:
             "formatversion": 2,
             "maxlag": MAXLAG_SECONDS,
         }
+        key = self._cache_key(WIKI_API_ENDPOINT, params)
+        return self._cached(
+            key,
+            ARTICLE_CACHE_TTL_SECONDS,
+            lambda: self._extlinks(params, max_pages),
+        )
+
+    def _extlinks(self, params: dict[str, object], max_pages: int) -> dict[str, list[str]]:
+        collected: dict[str, list[str]] = {}
         for page_index in range(max_pages):
             payload = self._api_get(params)
             for page in payload.get("query", {}).get("pages", []):
@@ -113,13 +168,23 @@ class WikiClient:
 
     # -- REST summary -----------------------------------------------------------------
     def summary(self, title: str) -> dict:
-        """``GET /page/summary/{title}`` — lead extract + canonical URL (§3.2 stage 2).
+        """``GET /page/summary/{title}`` — lead extract + canonical URL — cached 7 d.
 
         A missing page returns HTTP 404, which we map to an empty dict rather than
-        an error: a title can be deleted between discovery and read.
+        an error: a title can be deleted between discovery and read. The empty
+        mapping is returned uncached so a republished page is picked up next call.
         """
         rest_title = quote(title.replace(" ", "_"), safe="")
         url = WIKI_REST_SUMMARY_ENDPOINT.format(title=rest_title)
+        key = self._cache_key(url, None)
+        return self._cached(
+            key,
+            ARTICLE_CACHE_TTL_SECONDS,
+            lambda: self._summary(url),
+            cache_empty=False,
+        )
+
+    def _summary(self, url: str) -> dict:
         try:
             payload = self.session.get_json(url)
         except requests.HTTPError as exc:

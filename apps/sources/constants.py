@@ -80,6 +80,14 @@ WIKI_MIRROR_HOSTS = frozenset(
 )
 EXTLINKS_MAX_PAGES = 5  # safety cap on continuation loops
 
+# --- Caching (§3.2 "everything cached": articles 7 d, sources 7 d, search 24 h) -------
+SEARCH_CACHE_TTL_SECONDS = 24 * 60 * 60
+ARTICLE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+
+# --- robots.txt compliance (§6: robots respected for all non-Wikipedia sources) -------
+ROBOTS_CACHE_TTL_SECONDS = 24 * 60 * 60
+ROBOTS_ERROR_BACKOFF_SECONDS = 300  # don't hammer hosts whose robots.txt 5xx-es
+
 # --- Source fetch / cache (§3.2 stage 4, §5) ------------------------------------------
 # Hop-2 fan-out is a single user-facing knob: fast=0, balanced=3, deep=5.
 EVIDENCE_DEPTH_OPTIONS = {"fast": 0, "balanced": 3, "deep": 5}

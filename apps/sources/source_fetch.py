@@ -37,6 +37,7 @@ from .constants import (
     SOURCE_CACHE_TTL_SECONDS,
 )
 from .politeness import PolitenessError, PoliteSession
+from .robots import RobotsChecker
 
 try:  # pragma: no cover - import guard keeps this module importable without the extras
     import trafilatura
@@ -51,7 +52,13 @@ except ImportError:  # pragma: no cover
 
 @dataclass(frozen=True)
 class SourceEvidence:
-    """Hop-2 evidence: a snippet drawn from a source cited by a Wikipedia article."""
+    """Hop-2 evidence: a snippet drawn from a source cited by a Wikipedia article.
+
+    ``label`` is a pre-packing *ordinal* (S1..Sn over the fetched list). The
+    canonical ``[W#]``/``[S#]`` ids the model may cite are assigned by
+    :meth:`apps.sources.packer.pack_evidence`, which is the single label
+    authority (AGENTS.md §4.5) and may skip renumberable empty entries.
+    """
 
     label: str
     url: str
@@ -147,25 +154,37 @@ def fetch_source(
     citation: CitedSource,
     *,
     session: PoliteSession | None = None,
+    robots: RobotsChecker | None = None,
     now=None,
     max_age_seconds: int = SOURCE_CACHE_TTL_SECONDS,
 ):
     """Fetch (or return the cached) ``Source`` row for one cited URL.
 
     Returns the Django ``Source`` instance. Never raises on a fetch failure — the
-    error is recorded on the row instead (§5).
+    error is recorded on the row instead (§5). URLs disallowed by the domain's
+    robots.txt are recorded as ``skipped`` without a single byte fetched (§6).
     """
     from django.utils import timezone
 
     from apps.checks.models import EvidenceFetchStatus
 
     session = session or PoliteSession()
+    robots = robots or RobotsChecker(session=session)
     now = now or timezone.now()
     url = citation.url
 
     cached = _source_model().objects.filter(url=url).first()
     if cached is not None and _is_fresh(cached, now, max_age_seconds):
         return cached
+
+    if not robots.can_fetch(url):
+        return _store(
+            url,
+            content_hash=_sha256(url.encode("utf-8")),
+            fetch_status=EvidenceFetchStatus.SKIPPED,
+            text="",
+            fetched_at=now,
+        )
 
     try:
         response = session.get(url, allow_pdf=True)
@@ -196,6 +215,7 @@ def fetch_sources(
     *,
     depth: str = DEFAULT_EVIDENCE_DEPTH,
     session: PoliteSession | None = None,
+    robots: RobotsChecker | None = None,
     now=None,
     max_age_seconds: int = SOURCE_CACHE_TTL_SECONDS,
 ) -> list[SourceEvidence]:
@@ -210,12 +230,13 @@ def fetch_sources(
         return []
 
     session = session or PoliteSession()
+    robots = robots or RobotsChecker(session=session)
     selected = rank_citations(citations)[:limit]
 
     evidence: list[SourceEvidence] = []
     for index, citation in enumerate(selected, start=1):
         row = fetch_source(
-            citation, session=session, now=now, max_age_seconds=max_age_seconds
+            citation, session=session, robots=robots, now=now, max_age_seconds=max_age_seconds
         )
         evidence.append(
             SourceEvidence(
