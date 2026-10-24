@@ -7,6 +7,7 @@ import pytest
 from apps.inference.catalog import ModelCatalog
 from apps.inference.output import parse_model_output
 from apps.inference.providers.base import BaseLLMProvider
+from apps.inference.providers.gemini import GoogleGeminiProvider
 from apps.inference.providers.ollama import OllamaProvider
 from apps.inference.providers.remote_api import RemoteLLMProvider
 from apps.inference.service import CircuitBreaker, InferenceService
@@ -289,3 +290,34 @@ def test_empty_provider_list_returns_fail_state_not_exception():
     outcome = InferenceService([]).check("Claim")
     assert outcome.result.status == FAIL_STATE
     assert outcome.result.verdict is None
+
+
+def test_gemini_provider_uses_native_generatecontent_and_parses():
+    response = Mock()
+    response.json.return_value = {
+        "candidates": [{
+            "content": {
+                "parts": [{
+                    "text": '```json\n{"verdict":"true","confidence":0.9,"evidence":["W1"]}\n```'
+                }]
+            }
+        }],
+        "usageMetadata": {"promptTokenCount": 20, "candidatesTokenCount": 12},
+    }
+    response.raise_for_status.return_value = None
+    provider = GoogleGeminiProvider("test-google-key")
+
+    with patch("apps.inference.providers.gemini.requests.post", return_value=response) as post:
+        result = provider.check("Claim. Evidence: [W1]", timeout=5)
+
+    assert result.verdict == "true"
+    assert result.evidence == [{"id": "W1", "hop": "wiki"}]
+    assert provider.last_usage == (20, 12)
+    assert provider.provider_id == "remote_api"
+
+    url = post.call_args.args[0]
+    assert ":generateContent" in url
+    assert "gemma-4-26b-a4b-it" in url
+    body = post.call_args.kwargs["json"]
+    assert body["generationConfig"]["responseMimeType"] == "application/json"
+    assert "systemInstruction" in body

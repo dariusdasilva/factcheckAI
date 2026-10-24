@@ -166,6 +166,31 @@ def test_perform_inference_uses_the_pipeline_bundle(queued_run, monkeypatch):
     assert queued_run.evidence.count() == 1  # store_evidence persisted the hop-1 row
 
 
+def test_build_remote_provider_prefers_google_when_only_google_key_set(user, settings):
+    from apps.checks.tasks import _build_remote_provider
+    from apps.inference.providers.gemini import GoogleGeminiProvider
+
+    settings.OPENROUTER_API_KEY = ""
+    settings.GEMINI_API_KEY = "g-key"
+
+    provider = _build_remote_provider(user)
+
+    assert isinstance(provider, GoogleGeminiProvider)
+    assert provider.model_id == "gemma-4-26b-a4b-it"
+
+
+def test_build_remote_provider_prefers_openrouter_when_both_keys_set(user, settings):
+    from apps.checks.tasks import _build_remote_provider
+    from apps.inference.providers.remote_api import RemoteLLMProvider
+
+    settings.OPENROUTER_API_KEY = "or-key"
+    settings.GEMINI_API_KEY = "g-key"
+
+    provider = _build_remote_provider(user)
+
+    assert isinstance(provider, RemoteLLMProvider)
+
+
 def test_worker_never_clobbers_non_queued_runs(user):
     claim = Claim.objects.create(text="in-flight claim", created_by=user)
     run = CheckRun.objects.create(claim=claim, status=CheckRunStatus.RUNNING)

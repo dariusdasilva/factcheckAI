@@ -144,5 +144,9 @@ Q_CLUSTER = {
 # behind each user's per-tier ModelSetting; the providers read them at run time.
 OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
 DEFAULT_REMOTE_MODEL = env("DEFAULT_REMOTE_MODEL", default="google/gemma-4-26b-a4b-it:free")
+# Google Gemini API (alternative remote tier serving the open Gemma models).
+GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
+GEMINI_BASE_URL = env("GEMINI_BASE_URL", default="https://generativelanguage.googleapis.com/v1beta")
+DEFAULT_GEMINI_MODEL = env("DEFAULT_GEMINI_MODEL", default="gemma-4-26b-a4b-it")
 DEFAULT_LOCAL_MODEL = env("DEFAULT_LOCAL_MODEL", default="gemma4:e4b-it-qat")
 OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://localhost:11434")

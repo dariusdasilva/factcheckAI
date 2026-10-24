@@ -16,6 +16,7 @@ from django.utils import timezone
 from apps.checks.models import AuditLog, CheckRun, CheckRunStatus, VerdictEnum
 from apps.inference.catalog import ModelCatalog
 from apps.inference.providers.base import BaseLLMProvider
+from apps.inference.providers.gemini import GoogleGeminiProvider
 from apps.inference.providers.ollama import OllamaProvider
 from apps.inference.providers.remote_api import RemoteLLMProvider
 from apps.inference.service import InferenceService
@@ -73,32 +74,60 @@ def _tier_model(user, tier: str, default: str) -> str:
     )
 
 
-def _build_providers(run: CheckRun) -> list[BaseLLMProvider]:
-    """Assemble the provider chain from the user's per-tier ``ModelSetting``.
+def _google_model_id(user) -> str:
+    """Bare Gemini model id; normalise an OpenRouter-flavoured api-tier setting."""
+    configured = (
+        user.model_settings.filter(tier="api").values_list("model_id", flat=True).first()
+    )
+    if not configured:
+        return getattr(settings, "DEFAULT_GEMINI_MODEL", "gemma-4-26b-a4b-it")
+    return configured.replace("google/", "").split(":")[0]
 
-    Remote is only included when an API key is configured; when it is absent the
-    local Ollama tier is the sole (and therefore primary) provider. Model ids
-    fall back to the safe defaults (the free Gemma and the canonical QAT tag).
-    """
-    user = run.claim.created_by
-    providers: list[BaseLLMProvider] = []
 
-    api_key = (getattr(settings, "OPENROUTER_API_KEY", "") or "").strip()
-    if api_key:
+def _build_remote_provider(user) -> BaseLLMProvider | None:
+    """Choose the remote tier: OpenRouter when its key is set, else Google Gemini."""
+    openrouter_key = (getattr(settings, "OPENROUTER_API_KEY", "") or "").strip()
+    if openrouter_key:
         model_id = _tier_model(
             user,
             "api",
             getattr(settings, "DEFAULT_REMOTE_MODEL", "google/gemma-4-26b-a4b-it:free"),
         )
         input_price, output_price = _remote_prices(model_id)
-        providers.append(
-            RemoteLLMProvider(
-                api_key=api_key,
-                model_id=model_id,
-                input_price_per_mtok=input_price,
-                output_price_per_mtok=output_price,
-            )
+        return RemoteLLMProvider(
+            api_key=openrouter_key,
+            model_id=model_id,
+            input_price_per_mtok=input_price,
+            output_price_per_mtok=output_price,
         )
+
+    gemini_key = (getattr(settings, "GEMINI_API_KEY", "") or "").strip()
+    if gemini_key:
+        return GoogleGeminiProvider(
+            api_key=gemini_key,
+            model_id=_google_model_id(user),
+            base_url=getattr(
+                settings,
+                "GEMINI_BASE_URL",
+                "https://generativelanguage.googleapis.com/v1beta",
+            ),
+        )
+    return None
+
+
+def _build_providers(run: CheckRun) -> list[BaseLLMProvider]:
+    """Assemble the provider chain from the user's per-tier ``ModelSetting``.
+
+    The remote tier includes whichever provider has a configured key (OpenRouter
+    preferred, then Google Gemini); when neither is set the local Ollama tier is
+    the sole provider. Model ids fall back to the safe defaults.
+    """
+    user = run.claim.created_by
+    providers: list[BaseLLMProvider] = []
+
+    remote = _build_remote_provider(user)
+    if remote is not None:
+        providers.append(remote)
 
     local_model = _tier_model(
         user,

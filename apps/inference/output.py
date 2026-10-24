@@ -34,6 +34,25 @@ def evidence_id_to_item(evidence_id: str) -> dict[str, str]:
     return {"id": evidence_id, "hop": hop}
 
 
+def _extract_json(text: str) -> str:
+    """Tolerate markdown fences / chatter around the model's JSON object.
+
+    Gemini's ``responseMimeType: application/json`` biases clean output but some
+    models still wrap the object in a code block. We only relax the framing, not
+    the validation — ``parse_model_output`` still runs strict pydantic checks on
+    whatever object is extracted.
+    """
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text
+
+
 def parse_model_output(
     raw_output: str,
     prompt: str,
@@ -47,7 +66,7 @@ def parse_model_output(
     law: malformed JSON, an illegal verdict, a confidence out of range, or a
     citation to an evidence id that was never supplied (§4.5).
     """
-    parsed = ModelVerdict.model_validate_json(raw_output, strict=True)
+    parsed = ModelVerdict.model_validate_json(_extract_json(raw_output), strict=True)
     allowed_ids = set(EVIDENCE_ID_PATTERN.findall(prompt))
     if parsed.verdict != "unverified" and not parsed.evidence:
         raise ValueError("A true/false verdict must cite at least one supplied evidence id")
