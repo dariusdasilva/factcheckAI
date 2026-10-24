@@ -162,3 +162,22 @@ def test_finished_run_poll_sets_verdict_shape(client_fixture):
 def test_health_remains_public_without_auth():
     r = APIClient().get("/api/v1/health/")
     assert r.status_code == 200
+
+
+def test_session_authentication_serves_the_web_app(django_user_model):
+    # The web app uses Django sessions (§2.1); the extension uses token auth.
+    from django.test import Client
+
+    user = django_user_model.objects.create_user(username="webapp", password="x")
+    web = Client()
+    web.force_login(user)
+
+    listed = web.get(SUBMIT_URL)
+    assert listed.status_code == 200
+
+    response = web.post(
+        SUBMIT_URL,
+        data='{"claim": "session based submission"}',
+        content_type="application/json",
+    )
+    assert response.status_code == 202
