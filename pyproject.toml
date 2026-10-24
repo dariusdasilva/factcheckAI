@@ -11,3 +11,4 @@ ignore = ["E501"]
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["."]
+DJANGO_SETTINGS_MODULE = "config.settings.dev"
