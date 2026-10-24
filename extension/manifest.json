@@ -3,6 +3,12 @@
   "name": "FactCheckAI Extension",
   "version": "1.0.0",
   "description": "Verify claims on the fly using Gemma 4",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "factcheckai@factcheckai.local",
+      "strict_min_version": "115.0"
+    }
+  },
   "permissions": [
     "activeTab",
     "storage"

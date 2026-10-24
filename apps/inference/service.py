@@ -21,6 +21,7 @@ from apps.inference.types import (
     DEFAULT_FAIL_RETRY_AFTER_S,
     FAIL_STATE,
     FALLBACK,
+    PROVIDER_REMOTE_API,
     InferenceOutcome,
     InferenceResult,
 )
@@ -175,37 +176,48 @@ class InferenceService:
                 started, providers_tried, "No inference providers are configured."
             )
 
-        remote = self.providers[0]
-        input_price = (
-            remote_input_price
-            if remote_input_price is not None
-            else getattr(remote, "input_price_per_mtok", None)
+        # The remote (paid) tier is whichever provider is marked PROVIDER_REMOTE_API,
+        # not necessarily ``providers[0]`` — a local-only deployment has no remote.
+        remote = next(
+            (p for p in self.providers if self._provider_id(p) == PROVIDER_REMOTE_API),
+            None,
         )
-        output_price = (
-            remote_output_price
-            if remote_output_price is not None
-            else getattr(remote, "output_price_per_mtok", None)
-        )
-        if input_price is None or output_price is None:
-            remote_allowed = False
-            estimated_cost = 0.0
-            logger.warning("Skipping remote provider because its model price is unknown")
-        else:
-            estimated_cost = self.cost_estimator.estimate_cost(
-                f"{SYSTEM_PROMPT}\n{prompt}", input_price, output_price
+        has_remote_tier = remote is not None
+        remote_price_known = False
+        estimated_cost = 0.0
+        input_price = output_price = None
+        if remote is not None:
+            input_price = (
+                remote_input_price
+                if remote_input_price is not None
+                else getattr(remote, "input_price_per_mtok", None)
             )
-            remote_allowed = True
+            output_price = (
+                remote_output_price
+                if remote_output_price is not None
+                else getattr(remote, "output_price_per_mtok", None)
+            )
+            if input_price is not None and output_price is not None:
+                estimated_cost = self.cost_estimator.estimate_cost(
+                    f"{SYSTEM_PROMPT}\n{prompt}", input_price, output_price
+                )
+                remote_price_known = True
+            else:
+                logger.warning("Skipping remote provider because its model price is unknown")
 
         reservation_made = False
 
-        for index, provider in enumerate(self.providers):
+        for provider in self.providers:
             provider_id = self._provider_id(provider)
             providers_tried.append(provider_id)
-            if index == 0 and not remote_allowed:
+            is_remote_tier = provider is remote
+
+            if is_remote_tier and not remote_price_known:
                 continue
             if not self.circuit_breaker.is_available(provider_id):
                 continue
-            if index == 0:
+
+            if is_remote_tier:
                 try:
                     reservation_made = self.spend_manager.reserve(
                         estimated_cost,
@@ -213,7 +225,9 @@ class InferenceService:
                         monthly_cap=monthly_spend_cap,
                     )
                 except Exception as error:
-                    logger.error("Cannot verify API spend cap; skipping remote provider: %s", error)
+                    logger.error(
+                        "Cannot verify API spend cap; skipping remote provider: %s", error
+                    )
                     reservation_made = False
                     self.circuit_breaker.cancel_probe(provider_id)
                 if not reservation_made:
@@ -223,7 +237,7 @@ class InferenceService:
 
             remaining = self.total_timeout_seconds - (time.monotonic() - started)
             if remaining <= 0:
-                if index == 0 and reservation_made:
+                if is_remote_tier and reservation_made:
                     self.spend_manager.adjust_spend(-estimated_cost, spend_scope)
                     reservation_made = False
                 self.circuit_breaker.cancel_probe(provider_id)
@@ -242,11 +256,14 @@ class InferenceService:
                 self.circuit_breaker.record_success(provider_id)
                 result.provider_used = provider_id
                 result.latency_ms = int(elapsed * 1000)
-                if index > 0:
+                # "fallback" means we fell back to local because a remote tier exists.
+                if not is_remote_tier and has_remote_tier:
                     result.status = FALLBACK
 
+                model_id = getattr(provider, "model_id", None)
                 tokens_in, tokens_out = getattr(provider, "last_usage", (None, None))
-                if index == 0:
+
+                if is_remote_tier:
                     if tokens_in is not None and tokens_out is not None:
                         actual_cost = self.cost_estimator.cost_for_tokens(
                             tokens_in, tokens_out, input_price, output_price
@@ -255,26 +272,26 @@ class InferenceService:
                         actual_cost = estimated_cost
                     self.spend_manager.adjust_spend(actual_cost - estimated_cost, spend_scope)
                     reservation_made = False
-                    return InferenceOutcome(
-                        result=result,
-                        tokens_in=tokens_in,
-                        tokens_out=tokens_out,
-                        price_in_per_mtok=input_price,
-                        price_out_per_mtok=output_price,
-                        cost_usd=actual_cost,
-                        providers_tried=providers_tried,
-                    )
+                    cost_usd = actual_cost
+                    price_in, price_out = input_price, output_price
+                else:
+                    cost_usd = 0.0
+                    price_in = price_out = None
+
                 return InferenceOutcome(
                     result=result,
+                    model_id=model_id,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
-                    cost_usd=0.0,
+                    price_in_per_mtok=price_in,
+                    price_out_per_mtok=price_out,
+                    cost_usd=cost_usd,
                     providers_tried=providers_tried,
                 )
             except Exception as error:
                 logger.warning("Provider %s failed: %s", provider_id, error)
                 self.circuit_breaker.record_failure(provider_id)
-                if index == 0 and reservation_made:
+                if is_remote_tier and reservation_made:
                     self.spend_manager.adjust_spend(-estimated_cost, spend_scope)
                     reservation_made = False
                 if isinstance(error, ProviderCallTimeout):

@@ -32,9 +32,11 @@ INSTALLED_APPS = [
     "rest_framework.authtoken",  # DRF token auth (extension bearer keys)
     "corsheaders",
     "django_q",  # task queue (A4); workers run as `manage.py qcluster`
-    # Project apps (WORK_CHUNKS.md Chunk A: config/, apps/checks/, apps/accounts/)
+    # Project apps (checks/accounts = A; sources = C; inference is a plain
+    # package with no models, so it is imported directly and not registered).
     "apps.checks",
     "apps.accounts",
+    "apps.sources",
 ]
 
 MIDDLEWARE = [
@@ -137,5 +139,10 @@ Q_CLUSTER = {
     "orm": "default",
 }
 
-# Fake-check latency (A4) — placeholder until Chunk B's real inference lands.
-FAKE_CHECK_LATENCY_S = env.float("FAKE_CHECK_LATENCY_S", default=2.0)
+# --- Inference (Chunk B) ----------------------------------------------------
+# Remote tier (OpenRouter) and the local Ollama tier. These are the defaults
+# behind each user's per-tier ModelSetting; the providers read them at run time.
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
+DEFAULT_REMOTE_MODEL = env("DEFAULT_REMOTE_MODEL", default="google/gemma-4-26b-a4b-it:free")
+DEFAULT_LOCAL_MODEL = env("DEFAULT_LOCAL_MODEL", default="gemma4:e4b-it-qat")
+OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://localhost:11434")

@@ -1,20 +1,18 @@
-"""A4 deliverable: task-queue tests — slow fake check completes; worker is
-idempotent; submits land on the ORM broker. Hermetic (no live worker needed:
-run_check is invoked directly, as the qcluster would)."""
+"""A4 + B/C integration: the check worker runs evidence -> inference -> persist.
 
-import time
+Hermetic: ``run_check`` is invoked directly (as the qcluster would) with
+``_perform_inference`` patched out, so no network is touched here. The real
+evidence pipeline (Chunk C) and inference service (Chunk B) are covered by their
+own hermetic suites; these tests pin the worker plumbing and the fail-state law
+(AGENTS.md §2 — a run never carries a fabricated verdict).
+"""
 
 import pytest
 from rest_framework.test import APIClient
 
-from apps.checks.models import (
-    AuditLog,
-    CheckRun,
-    CheckRunStatus,
-    Claim,
-    VerdictEnum,
-)
+from apps.checks.models import AuditLog, CheckRun, CheckRunStatus, Claim, VerdictEnum
 from apps.checks.tasks import run_check
+from apps.inference.types import InferenceOutcome, InferenceResult
 
 pytestmark = [pytest.mark.django_db]
 
@@ -26,45 +24,89 @@ def user_fixture(django_user_model):
 
 @pytest.fixture(name="queued_run")
 def queued_run_fixture(user):
-    claim = Claim.objects.create(text="the fake check claim", created_by=user)
+    claim = Claim.objects.create(text="the integration claim", created_by=user)
     return CheckRun.objects.create(claim=claim)
 
 
-def test_slow_fake_check_task_completes(queued_run, settings):
-    # Acceptance test: the slow fake-check task completes.
-    settings.FAKE_CHECK_LATENCY_S = 0.4
-    started_wall = time.monotonic()
+def ok_outcome(verdict="true", provider="remote_api", model="google/gemma-4-26b-a4b-it:free"):
+    result = InferenceResult(
+        verdict=verdict,
+        confidence=0.9,
+        evidence=[{"id": "W1", "hop": "wiki"}],
+        raw_model_output='{"verdict":"true"}',
+        provider_used=provider,
+        latency_ms=100,
+        status="ok",
+    )
+    return InferenceOutcome(
+        result=result,
+        model_id=model,
+        tokens_in=100,
+        tokens_out=50,
+        price_in_per_mtok=0.0,
+        price_out_per_mtok=0.0,
+        cost_usd=0.0,
+        providers_tried=[provider],
+    )
 
-    result = run_check(queued_run.pk)
-    elapsed = time.monotonic() - started_wall
 
-    assert result == "ok"
-    assert elapsed >= 0.4
+def fail_outcome(detail="Both inference providers are currently unavailable."):
+    result = InferenceResult(verdict=None, confidence=None, evidence=[], status="fail_state")
+    return InferenceOutcome(
+        result=result,
+        detail=detail,
+        retry_after=60,
+        providers_tried=["remote_api", "ollama"],
+    )
+
+
+def test_check_completes_and_persists_a_real_verdict(queued_run, monkeypatch):
+    monkeypatch.setattr("apps.checks.tasks._perform_inference", lambda run: ok_outcome())
+
+    status = run_check(queued_run.pk)
+
     run = CheckRun.objects.get(pk=queued_run.pk)
+    assert status == "ok"
     assert run.status == CheckRunStatus.OK
-    assert run.verdict_enum == VerdictEnum.UNVERIFIED
-    assert run.started_at is not None
-    assert run.finished_at is not None
+    assert run.verdict_enum == VerdictEnum.TRUE
+    assert run.provider_used == "remote_api"
+    assert run.model_id == "google/gemma-4-26b-a4b-it:free"
+    assert run.confidence == pytest.approx(0.9)
     assert run.finished_at >= run.started_at
-    assert run.latency_ms >= 350
+    assert run.latency_ms >= 0
+    assert AuditLog.objects.filter(check_run=run, event="check_completed").exists()
 
 
-def test_completed_run_is_never_a_fabricated_verdict(queued_run, settings):
-    # Fail-state law: the plumbing placeholder must not invent confidence or
-    # provider attribution — 'unverified' with no model data is the honest mark.
-    settings.FAKE_CHECK_LATENCY_S = 0
+def test_fail_state_never_fabricates_a_verdict(queued_run, monkeypatch):
+    monkeypatch.setattr("apps.checks.tasks._perform_inference", lambda run: fail_outcome())
+
     run_check(queued_run.pk)
+
     run = CheckRun.objects.get(pk=queued_run.pk)
-    assert run.verdict_enum == VerdictEnum.UNVERIFIED
+    assert run.status == CheckRunStatus.FAIL_STATE
+    assert run.verdict_enum is None
     assert run.provider_used is None
     assert run.confidence is None
-    assert AuditLog.objects.filter(
-        check_run=run, event="fake_check_completed"
-    ).exists()
+    log = AuditLog.objects.get(check_run=run, event="fail_state_entered")
+    assert log.json_payload["providers_tried"] == ["remote_api", "ollama"]
+    assert log.json_payload["retry_after"] == 60
 
 
-def test_worker_never_clobbers_non_queued_runs(user, settings):
-    settings.FAKE_CHECK_LATENCY_S = 0
+def test_unexpected_error_becomes_honest_fail_state(queued_run, monkeypatch):
+    def blow_up(run):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("apps.checks.tasks._perform_inference", blow_up)
+
+    run_check(queued_run.pk)
+
+    run = CheckRun.objects.get(pk=queued_run.pk)
+    assert run.status == CheckRunStatus.FAIL_STATE
+    assert run.verdict_enum is None
+    assert AuditLog.objects.filter(check_run=run, event="fail_state_entered").exists()
+
+
+def test_worker_never_clobbers_non_queued_runs(user):
     claim = Claim.objects.create(text="in-flight claim", created_by=user)
     run = CheckRun.objects.create(claim=claim, status=CheckRunStatus.RUNNING)
 
@@ -77,23 +119,21 @@ def test_worker_silently_drops_missing_runs():
     assert run_check(424242) == "missing-claim"
 
 
-def test_running_is_persisted_before_the_latency_window(queued_run, settings, monkeypatch):
-    # Audit finding #4: status/started_at must hit the DB before time.sleep,
-    # so a worker crash leaves a truthful "running" row, not a stale "queued".
-    settings.FAKE_CHECK_LATENCY_S = 0
+def test_running_is_persisted_before_inference(queued_run, monkeypatch):
+    # A hard worker kill (SystemExit) mid-inference must leave a truthful
+    # "running" row, never a stale "queued" one.
     observed_status = {}
 
-    def crash_during_sleep(_seconds):
-        observed_status["crash"] = CheckRun.objects.get(pk=queued_run.pk).status
-        raise RuntimeError("simulated worker kill")
+    def crash(run):
+        observed_status["crash"] = CheckRun.objects.get(pk=run.pk).status
+        raise SystemExit("simulated worker kill")
 
-    monkeypatch.setattr("apps.checks.tasks.time.sleep", crash_during_sleep)
+    monkeypatch.setattr("apps.checks.tasks._perform_inference", crash)
 
-    with pytest.raises(RuntimeError, match="simulated worker kill"):
+    with pytest.raises(SystemExit, match="simulated worker kill"):
         run_check(queued_run.pk)
 
     assert observed_status["crash"] == CheckRunStatus.RUNNING
-    # Row stays running after the crash — never silently reset to queued.
     assert CheckRun.objects.get(pk=queued_run.pk).status == CheckRunStatus.RUNNING
 
 
@@ -104,10 +144,6 @@ def test_submit_enqueues_task_on_the_orm_broker(django_user_model):
 
     from django_q.models import OrmQ
 
-    response = client.post(
-        "/api/v1/checks/",
-        {"claim": "enqueue me"},
-        format="json",
-    )
+    response = client.post("/api/v1/checks/", {"claim": "enqueue me"}, format="json")
     assert response.status_code == 202
     assert OrmQ.objects.count() == 1  # queued on the DB-backed broker (CI_CD.md)
