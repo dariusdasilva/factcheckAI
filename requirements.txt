@@ -1,8 +1,35 @@
+# FactCheckAI — requirements
+# Best-guess for ALL four work chunks (see WORK_CHUNKS.md). Pin Loosely (>=), install,
+# remove anything we don't end up using before deploy. Newly-needed packages get added
+# here as we discover them; before shipping/demo, run `pip freeze > requirements-frozen.txt`
+# and deploy from that for reproducibility.
+
+# --- Chunk A: Django backend core ----------------------------------------------------
 Django>=5.0,<6.0
-djangorestframework>=3.15
-django-cors-headers>=4.3
-django-q2>=1.6
-redis>=5.0
-psycopg[binary]>=3.1; python_version >= '3.11'
-requests>=2.31
-trafilatura>=1.8
+djangorestframework>=3.15       # REST API layer
+django-cors-headers>=4.3        # CORS for web app + extension origins
+django-environ>=0.11            # env-var-driven settings (secrets out of code)
+gunicorn>=21.2                  # production WSGI server (deploy)
+whitenoise>=6.6                 # static files without extra infra
+
+# --- Chunk A: datastores & async -----------------------------------------------------
+psycopg[binary]>=3.1            # PostgreSQL driver (prod); falls back to sqlite in dev
+redis>=5.0                      # cache + task broker client
+django-redis>=5.4               # Django cache backend for Redis
+django-q2>=1.6                  # background task queue (checks run 10-60 s)
+
+# --- Chunk B: inference engine -------------------------------------------------------
+openai>=1.40                    # OpenRouter exposes an OpenAI-compatible API — one client for all Gemma models
+tiktoken>=0.7                   # token counting for cost estimation (§3.1 spend maths)
+pydantic>=2.7                   # strict parsing of model JSON output (verdicts; no string-soup)
+
+# --- Chunk C: Wikipedia evidence pipeline --------------------------------------------
+requests>=2.31                  # MediaWiki API + cited-source fetching
+trafilatura>=1.8                # main-text extraction from fetched HTML sources
+beautifulsoup4>=4.12            # reference/citation parsing
+lxml>=5.1                       # fast parser backend for bs4
+pypdf>=4.2                      # cited sources that ship as PDFs (gov/edu/doi)
+rank-bm25>=0.2.2                # lightweight evidence ranking into the prompt budget (§3.2 stage 5)
+
+# --- Deploy/demo utilities -----------------------------------------------------------
+python-dotenv>=1.0              # local .env convenience (pair with django-environ)
