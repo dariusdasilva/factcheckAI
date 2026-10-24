@@ -1,0 +1,9 @@
+{
+  "type": "standard",
+  "title": "Common cold",
+  "description": "Viral infectious disease of the upper respiratory tract",
+  "extract": "The common cold is a viral infectious disease of the upper respiratory tract that primarily affects the nose.",
+  "content_urls": {
+    "desktop": {"page": "https://en.wikipedia.org/wiki/Common_cold"}
+  }
+}

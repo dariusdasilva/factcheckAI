@@ -1,0 +1,30 @@
+{
+  "continue": {"eloffset": "20", "continue": "||"},
+  "query": {
+    "pages": [
+      {
+        "pageid": 1234,
+        "ns": 0,
+        "title": "Coffee",
+        "extlinks": [
+          {"url": "https://www.webmd.com/diet/health-benefits-coffee"},
+          {"url": "https://web.archive.org/web/2020/https://example.com/old-coffee"},
+          {"url": "https://twitter.com/someone/status/123"},
+          {"url": "https://www.en.wikipedia.org/wiki/Coffee"},
+          {"url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC123/"},
+          {"url": "mailto:editor@example.com"}
+        ]
+      },
+      {
+        "pageid": 5678,
+        "ns": 0,
+        "title": "Common cold",
+        "extlinks": [
+          {"url": "https://www.nhs.uk/conditions/common-cold/"},
+          {"url": "https://twitter.com/another/status/999"},
+          {"url": "https://www.webmd.com/cold-and-flu/common-cold"}
+        ]
+      }
+    ]
+  }
+}

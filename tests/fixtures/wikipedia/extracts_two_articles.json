@@ -1,0 +1,19 @@
+{
+  "batchcomplete": true,
+  "query": {
+    "pages": [
+      {
+        "pageid": 1234,
+        "ns": 0,
+        "title": "Coffee",
+        "extract": "Coffee is a beverage brewed from roasted, ground coffee beans. Darkly colored, bitter, and slightly acidic, coffee has a stimulating effect on humans, primarily due to its caffeine content."
+      },
+      {
+        "pageid": 5678,
+        "ns": 0,
+        "title": "Common cold",
+        "extract": "The common cold is a viral infection of the upper respiratory tract. There is no proven cure, and treatment is symptomatic."
+      }
+    ]
+  }
+}

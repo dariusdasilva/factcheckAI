@@ -1,0 +1,48 @@
+{
+  "batchcomplete": true,
+  "query": {
+    "searchinfo": {"totalhits": 4812},
+    "search": [
+      {
+        "ns": 0,
+        "title": "Coffee",
+        "pageid": 1234,
+        "size": 95000,
+        "wordcount": 14000,
+        "snippet": "<span class=\"searchmatch\">Coffee</span> is a brewed drink prepared from roasted coffee beans.",
+        "timestamp": "2026-10-01T00:00:00Z",
+        "score": 42.5
+      },
+      {
+        "ns": 0,
+        "title": "Common cold",
+        "pageid": 5678,
+        "size": 80000,
+        "wordcount": 11000,
+        "snippet": "The <span class=\"searchmatch\">common cold</span> is a viral infectious disease of the upper respiratory tract.",
+        "timestamp": "2026-10-01T00:00:00Z",
+        "score": 38.1
+      },
+      {
+        "ns": 0,
+        "title": "Caffeine",
+        "pageid": 91011,
+        "size": 70000,
+        "wordcount": 9000,
+        "snippet": "<span class=\"searchmatch\">Caffeine</span> is a central nervous system stimulant.",
+        "timestamp": "2026-10-01T00:00:00Z",
+        "score": 30.0
+      },
+      {
+        "ns": 0,
+        "title": "Health effects of coffee",
+        "pageid": 121314,
+        "size": 60000,
+        "wordcount": 8000,
+        "snippet": "<span class=\"searchmatch\">Health effects</span> of coffee are the subject of continuing research.",
+        "timestamp": "2026-10-01T00:00:00Z",
+        "score": 25.0
+      }
+    ]
+  }
+}

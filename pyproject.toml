@@ -1,7 +1,7 @@
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-exclude = [".venv", "node_modules", "extensions/*/web-ext-artifacts"]
+exclude = [".venv", "venv", "node_modules", "extensions/*/web-ext-artifacts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
@@ -10,4 +10,5 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["."]
 DJANGO_SETTINGS_MODULE = "config.settings.dev"
