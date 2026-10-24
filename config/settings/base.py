@@ -29,7 +29,9 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Third-party
     "rest_framework",
+    "rest_framework.authtoken",  # DRF token auth (extension bearer keys)
     "corsheaders",
+    "django_q",  # task queue (A4); workers run as `manage.py qcluster`
     # Project apps (WORK_CHUNKS.md Chunk A: config/, apps/checks/, apps/accounts/)
     "apps.checks",
     "apps.accounts",
@@ -75,9 +77,20 @@ DATABASES = {
     ),
 }
 
-# --- API (ARCHITECTURE.md §3: JSON only) ---------------------------------
+# --- API (ARCHITECTURE.md §3: JSON only, token/session auth) -------------
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    # Token auth for the extension; session auth for the web app (§2.1).
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.TokenAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    # 100 req/day/user default throttle (§3) — A4 acceptance blocks #101.
+    "DEFAULT_THROTTLE_CLASSES": ["apps.checks.throttling.AuthenticatedUserThrottle"],
+    "DEFAULT_THROTTLE_RATES": {"authenticated_user_day": "100/day"},
+    # Throttle scopes land with A4 (100 req/day/user) — global default then.
+    "DEFAULT_PAGINATION_CLASS": "apps.checks.pagination.CheckRunPagination",
 }
 
 # --- CORS (§6: only the web app origin allow-listed) ----------------------
@@ -104,3 +117,22 @@ CACHES = {
         "LOCATION": "factcheckai-default",
     },
 }
+
+# --- Task queue (A4, django-q2) -------------------------------------------
+# DB-backed broker: no Redis needed for the demo (CI_CD.md). B5's 90 s latency
+# cut-off governs the *task* itself; worker timeout must exceed it safely.
+Q_CLUSTER = {
+    "name": "factcheckai",
+    "workers": 2,
+    "timeout": 120,    # worker hard timeout; comfortably above B5's 90 s cut-off
+    "retry": 150,      # retry > timeout (per django-q2 warning semantics)
+    "max_attempts": 2,
+    "catch_up": False,
+    # NOTE: django-q2 (the maintained fork) reads this key lowercase and treats
+    # it as the DATABASE ALIAS for the broker queue table — `"ORM": True` from
+    # the old django-q docs silently falls back to a Redis broker.
+    "orm": "default",
+}
+
+# Fake-check latency (A4) — placeholder until Chunk B's real inference lands.
+FAKE_CHECK_LATENCY_S = env.float("FAKE_CHECK_LATENCY_S", default=2.0)

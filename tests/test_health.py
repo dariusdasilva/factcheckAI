@@ -18,3 +18,15 @@ def test_health_returns_200_json_with_db_ok():
     body = response.json()
     assert body["status"] == "ok"
     assert body["components"]["database"] == "ok"
+    assert body["components"]["queue"] == "ok"  # django_q configured since A4
+
+
+def test_health_queue_component_reports_unconfigured(monkeypatch):
+    from django.conf import settings
+    from django.test import Client
+
+    monkeypatch.setattr(
+        settings, "INSTALLED_APPS", [a for a in settings.INSTALLED_APPS if a != "django_q"]
+    )
+    response = Client().get("/api/v1/health/")
+    assert response.json()["components"]["queue"] == "not_configured"
