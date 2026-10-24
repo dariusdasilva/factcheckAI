@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Backend lint + tests (Chunks A/B/C)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check .
+      # CI never talks to live APIs: B and C's tests use recorded fixtures (see WORK_CHUNKS.md).
+      - name: Tests (pytest)
+        run: pytest
+
+  web:
+    name: Web app (Chunk D)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & test web app
+        if: ${{ hashFiles('frontend/web/package.json') != '' }}
+        run: |
+          cd frontend/web
+          npm ci
+          npm run build --if-present
+          npm test --if-present
+
+  extension:
+    name: Firefox extension lint (Chunk D)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Lint & package extension
+        if: ${{ hashFiles('extension/manifest.json') != '' }}
+        run: |
+          npx --yes web-ext lint --source-dir=extension --warnings-as-errors
+          npx --yes web-ext build --source-dir=extension --artifacts-dir=dist
+      - name: Upload extension artifact
+        if: ${{ hashFiles('extension/manifest.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-extension
+          path: dist/
+
+  release:
+    name: Release (tag → packaged extension)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [backend, extension, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Package extension
+        if: ${{ hashFiles('extension/manifest.json') != '' }}
+        run: npx --yes web-ext build --source-dir=extension --artifacts-dir=dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: ${{ hashFiles('extension/manifest.json') != '' }}
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
