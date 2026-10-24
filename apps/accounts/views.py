@@ -25,13 +25,15 @@ def model_settings(request: Request) -> Response:
         in_serializer = ModelSettingUpsertSerializer(data=request.data)
         in_serializer.is_valid(raise_exception=True)
         data = in_serializer.validated_data
+        defaults = {"model_id": data["model_id"]}
+        # Only touch the spend cap when the caller actually sent it — omitting
+        # the field must not silently wipe a configured cap (audit finding A6).
+        if "spend_cap_monthly" in data:
+            defaults["spend_cap_monthly"] = data["spend_cap_monthly"]
         ModelSetting.objects.update_or_create(
             user=request.user,
             tier=data["tier"],
-            defaults={
-                "model_id": data["model_id"],
-                "spend_cap_monthly": data.get("spend_cap_monthly"),
-            },
+            defaults=defaults,
         )
 
     rows = ModelSetting.objects.filter(user=request.user)
@@ -52,6 +54,7 @@ def create_api_key(request: Request) -> Response:
         {
             "id": key.pk,
             "key": raw_key,
+            "created_at": key.created_at.isoformat(),
             "note": "Copy this key now — it is shown only once (only a SHA-256 hash is stored).",
         },
         status=status.HTTP_201_CREATED,

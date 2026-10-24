@@ -77,10 +77,30 @@ def test_worker_silently_drops_missing_runs():
     assert run_check(424242) == "missing-claim"
 
 
+def test_running_is_persisted_before_the_latency_window(queued_run, settings, monkeypatch):
+    # Audit finding #4: status/started_at must hit the DB before time.sleep,
+    # so a worker crash leaves a truthful "running" row, not a stale "queued".
+    settings.FAKE_CHECK_LATENCY_S = 0
+    observed_status = {}
+
+    def crash_during_sleep(_seconds):
+        observed_status["crash"] = CheckRun.objects.get(pk=queued_run.pk).status
+        raise RuntimeError("simulated worker kill")
+
+    monkeypatch.setattr("apps.checks.tasks.time.sleep", crash_during_sleep)
+
+    with pytest.raises(RuntimeError, match="simulated worker kill"):
+        run_check(queued_run.pk)
+
+    assert observed_status["crash"] == CheckRunStatus.RUNNING
+    # Row stays running after the crash — never silently reset to queued.
+    assert CheckRun.objects.get(pk=queued_run.pk).status == CheckRunStatus.RUNNING
+
+
 def test_submit_enqueues_task_on_the_orm_broker(django_user_model):
-    cache_user = django_user_model.objects.create_user(username="enqueueuser", password="x")
+    enqueue_user = django_user_model.objects.create_user(username="enqueueuser", password="x")
     client = APIClient()
-    client.force_authenticate(user=cache_user)
+    client.force_authenticate(user=enqueue_user)
 
     from django_q.models import OrmQ
 

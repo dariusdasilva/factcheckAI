@@ -59,6 +59,31 @@ def test_put_updates_existing_row_without_duplicating(client_fixture):
     assert ModelSetting.objects.get(user=user).model_id == "google/gemma-3-12b-it"
 
 
+def test_put_without_spend_cap_does_not_wipe_existing_cap(client_fixture):
+    # Audit finding #6: the settings UI edits model_id without the cap field;
+    # an omitted cap must be left alone, not reset to null/default.
+    client, user = client_fixture
+
+    client.put(
+        "/api/v1/settings/model/",
+        {"tier": "api", "model_id": FREE_MODEL, "spend_cap_monthly": "5.00"},
+        format="json",
+    )
+    assert ModelSetting.objects.get(user=user).spend_cap_monthly is not None
+    assert str(ModelSetting.objects.get(user=user).spend_cap_monthly) == "5.00"
+
+    # Re-PUT with model_id only — the cap must survive.
+    response = client.put(
+        "/api/v1/settings/model/",
+        {"tier": "api", "model_id": "google/gemma-4-31b-it"},
+        format="json",
+    )
+    assert response.status_code == 200
+    row = ModelSetting.objects.get(user=user)
+    assert row.model_id == "google/gemma-4-31b-it"
+    assert str(row.spend_cap_monthly) == "5.00"
+
+
 def test_put_rejects_spend_cap_on_local_tier(client_fixture):
     client, _ = client_fixture
     response = client.put(

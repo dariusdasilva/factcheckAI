@@ -11,8 +11,10 @@ import hashlib
 import logging
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.db import connection
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django_q.tasks import async_task
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
@@ -56,7 +58,6 @@ def health(request: Request) -> Response:
     "degraded" state. The provider component is filled in by Chunk B.
     """
     db_ok = _database_ok()
-    from django.conf import settings
 
     queue_component = (
         "ok"
@@ -202,6 +203,7 @@ def store_source(request: Request) -> Response:
             "domain": domain,
             "fetch_status": EvidenceFetchStatus.FETCHED,
             "text_extract": text,
+            "fetched_at": timezone.now(),
         },
     )
     if not created:
@@ -209,7 +211,16 @@ def store_source(request: Request) -> Response:
         source.domain = domain
         source.text_extract = text
         source.fetch_status = EvidenceFetchStatus.FETCHED
-        source.save(update_fields=["content_hash", "domain", "text_extract"])
+        source.fetched_at = timezone.now()
+        source.save(
+            update_fields=[
+                "content_hash",
+                "domain",
+                "text_extract",
+                "fetch_status",
+                "fetched_at",
+            ]
+        )
 
     return Response(
         {

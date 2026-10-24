@@ -29,10 +29,13 @@ def run_check(check_run_id: int) -> str:
 
     run.status = CheckRunStatus.RUNNING
     run.started_at = timezone.now()
+    # Persist before the latency window: a worker crash mid-sleep must leave a
+    # truthful "running" row behind, not an imaginary "queued" one.
+    run.save(update_fields=["status", "started_at"])
+
     # Fake latency: stand-in for the 10-60 s real inference window (§2.2).
     fake_latency = float(getattr(settings, "FAKE_CHECK_LATENCY_S", 2.0))
     time.sleep(fake_latency)
-    run.save(update_fields=["status", "started_at"])
 
     run.status = CheckRunStatus.OK
     run.verdict_enum = VerdictEnum.UNVERIFIED
