@@ -19,6 +19,11 @@ INFERENCE_RESULT_STATUSES = ("ok", "fallback", "fail_state")
 PROVIDER_REMOTE_API = "remote_api"
 PROVIDER_OLLAMA = "ollama"
 
+# Fail-state response body constants (§2.2) — exact strings, shared with D.
+FAIL_STATE_DETAIL = "Both inference providers are currently unavailable."
+DEFAULT_FAIL_RETRY_AFTER_S = 60
+DEFAULT_PROVIDERS_TRIED = (PROVIDER_REMOTE_API, PROVIDER_OLLAMA)
+
 
 @dataclass
 class InferenceResult:

@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Third-party
     "rest_framework",
+    "rest_framework.authtoken",  # DRF token auth (extension bearer keys)
     "corsheaders",
     # Project apps (WORK_CHUNKS.md Chunk A: config/, apps/checks/, apps/accounts/)
     "apps.checks",
@@ -75,9 +76,17 @@ DATABASES = {
     ),
 }
 
-# --- API (ARCHITECTURE.md §3: JSON only) ---------------------------------
+# --- API (ARCHITECTURE.md §3: JSON only, token/session auth) -------------
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    # Token auth for the extension; session auth for the web app (§2.1).
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.TokenAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    # Throttle scopes land with A4 (100 req/day/user) — global default then.
+    "DEFAULT_PAGINATION_CLASS": "apps.checks.pagination.CheckRunPagination",
 }
 
 # --- CORS (§6: only the web app origin allow-listed) ----------------------
