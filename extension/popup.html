@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>FactCheckAI</title>
+    <style>
+        body {
+            width: 300px;
+            font-family: 'Inter', sans-serif;
+            background: #0a0a0a;
+            color: white;
+            margin: 0;
+            padding: 1rem;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .header {
+            font-weight: 800;
+            text-transform: uppercase;
+            font-size: 1.2rem;
+            color: #ff4655;
+            border-bottom: 1px solid #27272a;
+            padding-bottom: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .status-box {
+            background: #1a1a1a;
+            padding: 0.75rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            border: 1px solid #27272a;
+        }
+        .btn {
+            background: #ff4655;
+            color: white;
+            border: none;
+            padding: 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 700;
+            text-transform: uppercase;
+            width: 100%;
+        }
+        .btn:disabled {
+            background: #444;
+            cursor: not-allowed;
+        }
+        #result-area {
+            margin-top: 1rem;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+        .verdict-badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">FactCheck<span>AI</span></div>
+        
+        <div id="setup-warning" class="status-box hidden" style="color: #f59e0b;">
+            Missing API Key. <a href="#" id="btn-go-options" style="color: #fff; text-decoration: underline; cursor: pointer;">Set it here</a>
+        </div>
+
+        <div id="main-ui">
+            <div class="status-box">
+                <strong>Selected Text:</strong>
+                <div id="selected-text" style="margin-top: 0.5rem; color: #a1a1aa;">Nothing selected...</div>
+            </div>
+            <button id="btn-verify" class="btn" disabled>Verify Selection</button>
+            <div id="result-area"></div>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>
