@@ -28,6 +28,11 @@ def test_create_api_key_shows_raw_once_stores_hash_only(client_fixture):
     assert response.status_code == 201
     body = response.json()
     assert body["key"].startswith("fcai_")
+    # returned in response so listing UIs can show key age without re-querying
+    assert "created_at" in body
+    from datetime import datetime
+
+    assert datetime.fromisoformat(body["created_at"]).tzinfo is not None
 
     stored = ApiKey.objects.get(pk=body["id"])
     assert stored.key_hash == hashlib.sha256(body["key"].encode()).hexdigest()
@@ -62,6 +67,43 @@ def test_source_push_creates_cache_row(client_fixture):
     assert row.text_extract == SOURCE_TEXT
     expected_hash = hashlib.sha256(SOURCE_TEXT.encode()).hexdigest()
     assert row.content_hash == expected_hash
+    assert row.fetched_at is not None  # the §3.2 staleness check needs this
+
+
+def test_source_update_persists_fetch_status_and_fetched_at(client_fixture):
+    # Audit finding #1: on update, both fields must actually be written —
+    # this is where Chunk C's "fresh cache row" predicate lives.
+    client, _ = client_fixture
+    from django.utils import timezone
+
+    first = client.post(
+        "/api/v1/sources/",
+        {"url": SOURCE_URL, "text": "version 1"},
+        format="json",
+    ).json()
+    first_fetched_at = Source.objects.get(pk=first["id"]).fetched_at
+    assert first_fetched_at > timezone.now() - timezone.timedelta(seconds=10)
+
+    # Simulate a previously-errored row state, as if Chunk C's crawler hit a
+    # 403 paywall and the extension re-pushes the same URL afterwards.
+    row = Source.objects.get(pk=first["id"])
+    row.fetch_status = EvidenceFetchStatus.ERROR
+    row.fetched_at = None
+    row.save()
+
+    response = client.post(
+        "/api/v1/sources/",
+        {"url": SOURCE_URL, "text": "version 2"},
+        format="json",
+    )
+    assert response.status_code == 200
+    assert response.json()["cached"] is True
+
+    fresh = Source.objects.get(pk=first["id"])
+    assert fresh.fetch_status == EvidenceFetchStatus.FETCHED
+    assert fresh.content_hash == hashlib.sha256(b"version 2").hexdigest()
+    assert fresh.fetched_at is not None
+    assert fresh.fetched_at > timezone.now() - timezone.timedelta(seconds=10)
 
 
 def test_source_push_same_url_and_text_is_a_cache_hit(client_fixture):

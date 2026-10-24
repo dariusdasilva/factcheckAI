@@ -11,10 +11,13 @@ import hashlib
 import logging
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.db import connection
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django_q.tasks import async_task
 from rest_framework import mixins, status, viewsets
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -47,16 +50,23 @@ def _database_ok() -> bool:
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+@throttle_classes([])  # health is the degradation pre-flight probe: never throttle it
 def health(request: Request) -> Response:
     """GET /api/v1/health/ — public liveness/readiness probe (deliverable A1).
 
     Per ARCHITECTURE.md §3 this is used by both clients to pre-emptively show a
-    "degraded" state. Provider and queue components are filled in by Chunks
-    B (inference) and A4 (task queue) as those come online.
+    "degraded" state. The provider component is filled in by Chunk B.
     """
     db_ok = _database_ok()
+
+    queue_component = (
+        "ok"
+        if "django_q" in settings.INSTALLED_APPS and hasattr(settings, "Q_CLUSTER")
+        else "not_configured"
+    )
     components = {
         "database": "ok" if db_ok else "unreachable",
+        "queue": queue_component,
     }
     return Response(
         {
@@ -105,9 +115,10 @@ class ChecksViewSet(
         )
         run = CheckRun.objects.create(claim=claim)
 
-        # A4 wires the Django-Q2 worker here: enqueue(run) transitions
-        # queued → running and calls InferenceService.check() (Chunk B).
-        # Until then the task stays queued — the 202-then-poll contract holds.
+        # Enqueue on the Django-Q2 ORM broker (A4) — the qcluster worker picks
+        # it up and transitions queued → running → ok. When Chunk B lands,
+        # only apps.checks.tasks.run_check changes; this call stays.
+        async_task("apps.checks.tasks.run_check", run.pk, group="checks")
 
         return Response(
             {"check_id": run.pk, "status": CheckRunStatus.QUEUED},
@@ -192,6 +203,7 @@ def store_source(request: Request) -> Response:
             "domain": domain,
             "fetch_status": EvidenceFetchStatus.FETCHED,
             "text_extract": text,
+            "fetched_at": timezone.now(),
         },
     )
     if not created:
@@ -199,7 +211,16 @@ def store_source(request: Request) -> Response:
         source.domain = domain
         source.text_extract = text
         source.fetch_status = EvidenceFetchStatus.FETCHED
-        source.save(update_fields=["content_hash", "domain", "text_extract"])
+        source.fetched_at = timezone.now()
+        source.save(
+            update_fields=[
+                "content_hash",
+                "domain",
+                "text_extract",
+                "fetch_status",
+                "fetched_at",
+            ]
+        )
 
     return Response(
         {
