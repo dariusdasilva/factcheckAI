@@ -106,6 +106,66 @@ def test_unexpected_error_becomes_honest_fail_state(queued_run, monkeypatch):
     assert AuditLog.objects.filter(check_run=run, event="fail_state_entered").exists()
 
 
+def test_perform_inference_uses_the_pipeline_bundle(queued_run, monkeypatch):
+    """The real enrichment path extracts the bundle from the pipeline result."""
+    from apps.inference.providers.base import BaseLLMProvider
+    from apps.sources.packer import EvidenceBundle, PackedEvidence
+    from apps.sources.pipeline import EvidencePipelineResult
+
+    class FakeProvider(BaseLLMProvider):
+        provider_id = "remote_api"
+        input_price_per_mtok = 1.0
+        output_price_per_mtok = 1.0
+        model_id = "google/gemma-4-26b-a4b-it:free"
+
+        def __init__(self):
+            self.last_usage = (10, 5)
+            self.seen_prompt = None
+
+        def check(self, prompt, timeout=None):
+            self.seen_prompt = prompt
+            return InferenceResult(
+                verdict="true",
+                confidence=0.8,
+                evidence=[{"id": "W1", "hop": "wiki"}],
+                raw_model_output="",
+                provider_used="remote_api",
+                latency_ms=1,
+                status="ok",
+            )
+
+        def is_available(self):
+            return True
+
+    bundle = EvidenceBundle(
+        claim=queued_run.claim.text,
+        items=[
+            PackedEvidence(
+                label="W1",
+                hop="wiki",
+                url="https://en.wikipedia.org/wiki/Coffee",
+                title="Coffee",
+                snippet="Coffee is a brewed drink.",
+                relevance=0.9,
+            )
+        ],
+    )
+    pipeline_result = EvidencePipelineResult(claim=queued_run.claim.text, bundle=bundle)
+    monkeypatch.setattr(
+        "apps.checks.tasks.run_evidence_pipeline", lambda claim: pipeline_result
+    )
+    provider = FakeProvider()
+    monkeypatch.setattr("apps.checks.tasks._build_providers", lambda run: [provider])
+
+    from apps.checks.tasks import _perform_inference
+
+    outcome = _perform_inference(queued_run)
+
+    assert outcome.result.verdict == "true"
+    assert "[W1]" in provider.seen_prompt
+    assert queued_run.evidence.count() == 1  # store_evidence persisted the hop-1 row
+
+
 def test_worker_never_clobbers_non_queued_runs(user):
     claim = Claim.objects.create(text="in-flight claim", created_by=user)
     run = CheckRun.objects.create(claim=claim, status=CheckRunStatus.RUNNING)

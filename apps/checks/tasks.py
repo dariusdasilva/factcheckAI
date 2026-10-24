@@ -26,7 +26,7 @@ from apps.inference.types import (
     InferenceOutcome,
     InferenceResult,
 )
-from apps.sources.packer import store_evidence
+from apps.sources.packer import EvidenceBundle, store_evidence
 from apps.sources.pipeline import run_evidence_pipeline
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,10 @@ def _spend_cap(run: CheckRun) -> float:
 
 def _perform_inference(run: CheckRun) -> InferenceOutcome:
     """Enrich the claim (Chunk C) then run the fallback chain (Chunk B)."""
-    bundle = run_evidence_pipeline(run.claim.text)
+    pipeline_result = run_evidence_pipeline(run.claim.text)
+    # ``run_evidence_pipeline`` returns the full result; the labelled bundle is
+    # what the prompt (and the Evidence rows) are built from.
+    bundle = pipeline_result.bundle or EvidenceBundle(claim=run.claim.text)
     store_evidence(run, bundle)
     prompt = _build_prompt(run.claim.text, bundle)
     providers = _build_providers(run)
