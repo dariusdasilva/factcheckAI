@@ -1,72 +1,98 @@
 /**
- * api.js — The "Communicator"
- * This file handles all communication with the backend.
- * Currently, it uses a "Mock" (fake) brain so we can build the UI.
+ * api.js — real backend client.
+ *
+ * Authenticates against POST /api/v1/auth/token/ (username + password), stores
+ * the DRF token in localStorage, and sends it as `Authorization: Token <key>`
+ * on every request. Fact-checks are asynchronous: submit, then poll until the
+ * run reaches a terminal status (ok | fallback | fail_state).
  */
 
-const API_BASE = '/api/v1'; // The real URL we will use later
-const MOCK_FILE = '/tests/mocks/api_responses.json'; // Where our pretend answers live
+const API_BASE = '/api/v1';
+const TOKEN_KEY = 'fcai_token';
 
-async function fetchMock(key) {
-    console.log(`[API] Fetching mock data for: ${key}...`);
-    try {
-        const response = await fetch(MOCK_FILE);
-        const data = await response.json();
-        return data[key];
-    } catch (e) {
-        console.error(`[API] Error reading mock file: ${e}`);
-        return null;
+const TERMINAL_STATUSES = ['ok', 'fallback', 'fail_state'];
+
+function token() {
+    return localStorage.getItem(TOKEN_KEY);
+}
+
+function authHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const t = token();
+    if (t) headers['Authorization'] = `Token ${t}`;
+    return headers;
+}
+
+async function request(path, options = {}) {
+    const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers: { ...(options.headers || {}), ...authHeaders() },
+    });
+
+    let data = null;
+    const text = await response.text();
+    if (text) {
+        try { data = JSON.parse(text); } catch (_e) { data = text; }
     }
+
+    if (response.status === 401 || response.status === 403) {
+        throw new Error('Not authenticated. Please log in.');
+    }
+    if (!response.ok) {
+        const detail = data && (data.detail || data.non_field_errors) || `Request failed (${response.status})`;
+        throw new Error(Array.isArray(detail) ? detail.join(' ') : detail);
+    }
+    return data;
 }
 
 const Api = {
-    // Pretend to log in
+    isLoggedIn() {
+        return Boolean(token());
+    },
+
     async login(username, password) {
-        console.log(`[API] Attempting login for ${username}...`);
-        // In a real app: POST /api/v1/auth/login
-        // In mock: just return success if username isn't empty
-        return new Promise((resolve) => {
-            setTimeout(() => {
-                if (username && password) {
-                    resolve({ success: true, user: { username, token: 'fake-jwt-token' } });
-                } else {
-                    resolve({ success: false, message: 'Invalid credentials' });
-                }
-            }, 500);
-        });
+        try {
+            const data = await request('/auth/token/', {
+                method: 'POST',
+                body: JSON.stringify({ username, password }),
+            });
+            localStorage.setItem(TOKEN_KEY, data.token);
+            return { success: true, username };
+        } catch (error) {
+            return { success: false, message: error.message };
+        }
     },
 
-    // Pretend to register
-    async register(username, email, password) {
-        console.log(`[API] Attempting to register ${username}...`);
-        // In a real app: POST /api/v1/auth/register
-        return new Promise((resolve) => {
-            setTimeout(() => {
-                resolve({ success: true, message: 'Account created successfully!' });
-            }, 500);
-        });
+    logout() {
+        localStorage.removeItem(TOKEN_KEY);
     },
 
-    // Get a fact check result
+    // Submit a claim (202), then poll until a terminal result is ready.
     async getCheckResult(claim) {
-        console.log(`[API] Requesting check for: ${claim}...`);
-        
-        // For demo purposes, we'll rotate through the mock answers 
-        // based on a random choice so you can see all UI states.
-        const scenarios = ['success_remote', 'success_local', 'fail_state'];
-        const randomScenario = scenarios[Math.floor(Math.random() * scenarios.length)];
-        
-        const result = await fetchMock(randomScenario);
-        return result;
+        const submitted = await request('/checks/', {
+            method: 'POST',
+            body: JSON.stringify({ claim }),
+        });
+        const checkId = submitted.check_id;
+
+        for (let attempt = 0; attempt < 90; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            const result = await request(`/checks/${checkId}/`);
+            if (TERMINAL_STATUSES.includes(result.status)) {
+                return result;
+            }
+        }
+        throw new Error('Timed out waiting for a result.');
     },
 
-    // Get user history
     async getHistory() {
-        console.log(`[API] Fetching history...`);
-        return [
-            { id: 1, claim: "Drinking coffee cures colds", verdict: "false", date: "2026-10-23" },
-            { id: 2, claim: "The moon is made of cheese", verdict: "false", date: "2026-10-22" },
-            { id: 3, claim: "Water is wet", verdict: "true", date: "2026-10-21" },
-        ];
-    }
+        const data = await request('/checks/');
+        const rows = data.results || data;
+        return rows.map((run) => ({
+            id: run.check_id,
+            claim: run.claim_text,
+            verdict: run.verdict_enum || run.status,
+            date: run.created_at ? new Date(run.created_at).toLocaleString() : '',
+        }));
+    },
 };

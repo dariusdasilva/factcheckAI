@@ -107,3 +107,35 @@ def test_session_auth_still_works_alongside_api_keys(user_and_key):
     web = Client()
     web.force_login(user)
     assert web.get(CHECKS_URL).status_code == 200
+
+
+def test_obtain_token_endpoint_mints_an_authtoken(django_user_model):
+    """The web app logs in at /auth/token/ and reuses the DRF token everywhere."""
+    user = django_user_model.objects.create_user(username="webuser", password="webpass")
+
+    denied = APIClient().post(
+        "/api/v1/auth/token/", {"username": "webuser", "password": "wrong"}, format="json"
+    )
+    assert denied.status_code == 400
+
+    granted = APIClient().post(
+        "/api/v1/auth/token/", {"username": "webuser", "password": "webpass"}, format="json"
+    )
+    assert granted.status_code == 200
+    assert granted.json()["token"] == Token.objects.get(user=user).key
+
+
+def test_obtained_token_authenticates_checks(django_user_model):
+    django_user_model.objects.create_user(username="webuser2", password="webpass")
+
+    token = APIClient().post(
+        "/api/v1/auth/token/", {"username": "webuser2", "password": "webpass"}, format="json"
+    ).json()["token"]
+
+    response = APIClient().post(
+        CHECKS_URL,
+        {"claim": "web-app DRF token must authenticate"},
+        format="json",
+        HTTP_AUTHORIZATION=f"Token {token}",
+    )
+    assert response.status_code == 202

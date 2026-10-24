@@ -4,6 +4,15 @@
  * and updating the text on the page.
  */
 
+function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     console.log("[App] Initializing FactCheckAI Web App...");
 
@@ -75,19 +84,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('register-form').addEventListener('submit', async (e) => {
         e.preventDefault();
-        const user = document.getElementById('reg-username').value;
-        const email = document.getElementById('reg-email').value;
-        const pass = document.getElementById('reg-password').value;
-
-        const response = await Api.register(user, email, pass);
-        if (response.success) {
-            alert(response.message);
-            showScreen('login');
-        }
+        alert('Self-registration is disabled in this demo. Ask an admin for an account, then log in.');
     });
 
     document.getElementById('nav-logout').addEventListener('click', (e) => {
         e.preventDefault();
+        Api.logout();
         navLinks.classList.add('hidden');
         showScreen('login');
     });
@@ -102,8 +104,12 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('result-evidence').innerHTML = "";
         document.getElementById('result-banner').classList.add('hidden');
 
-        const result = await Api.getCheckResult(claim);
-        renderResult(result);
+        try {
+            const result = await Api.getCheckResult(claim);
+            renderResult(result);
+        } catch (error) {
+            renderResult({ status: 'fail_state', detail: error.message, evidence: [] });
+        }
     });
 
     function renderResult(data) {
@@ -113,17 +119,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const evidenceEl = document.getElementById('result-evidence');
         const bannerEl = document.getElementById('result-banner');
 
-        bannerEl.classList.add('hidden');
         bannerEl.className = 'banner';
+        bannerEl.classList.add('hidden');
 
         if (data.status === 'fail_state') {
-            bannerEl.innerText = data.detail;
+            bannerEl.innerText = data.detail || 'Service is currently unavailable.';
             bannerEl.classList.add('banner-fail');
             bannerEl.classList.remove('hidden');
             verdictEl.innerText = "Service Unavailable";
             confEl.innerText = "N/A";
-            detailEl.innerText = "We couldn't reach our AI providers. Please try again later.";
-            evidenceEl.innerHTML = "";
+            detailEl.innerText = "We couldn't reach an AI provider. Please try again later.";
+            evidenceEl.innerHTML = renderEvidence(data.evidence);
             return;
         }
 
@@ -133,14 +139,25 @@ document.addEventListener('DOMContentLoaded', () => {
             bannerEl.classList.remove('hidden');
         }
 
-        verdictEl.innerText = `Verdict: ${data.verdict.toUpperCase()}`;
-        confEl.innerText = `${(data.confidence * 100).toFixed(0)}% Confidence`;
-        detailEl.innerText = data.detail;
+        const verdict = (data.verdict_enum || 'unverified').toUpperCase();
+        verdictEl.innerText = `Verdict: ${verdict}`;
+        confEl.innerText = data.confidence == null
+            ? 'N/A'
+            : `${(data.confidence * 100).toFixed(0)}% Confidence`;
+        detailEl.innerText = data.detail || '';
+        evidenceEl.innerHTML = renderEvidence(data.evidence);
+    }
 
-        evidenceEl.innerHTML = data.evidence.map(ev => `
+    function renderEvidence(evidence) {
+        const items = evidence || [];
+        if (!items.length) {
+            return '<li class="muted">No evidence was gathered for this claim.</li>';
+        }
+        return items.map(ev => `
             <li>
-                <strong>${ev.id}</strong>: ${ev.snippet}<br>
-                <small><a href="${ev.url}" target="_blank">${ev.url}</a></small>
+                <strong>${escapeHtml(ev.hop === 'wiki' ? 'Wikipedia' : 'Cited source')}</strong> — ${escapeHtml(ev.title || '')}<br>
+                <span>${escapeHtml(ev.snippet || '')}</span><br>
+                <small><a href="${escapeHtml(ev.url)}" target="_blank" rel="noopener">${escapeHtml(ev.url)}</a></small>
             </li>
         `).join('');
     }
@@ -211,4 +228,10 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         showScreen('submit');
     });
+
+    // --- 7. Restore an existing session on load ---
+    if (Api.isLoggedIn()) {
+        navLinks.classList.remove('hidden');
+        showScreen('submit');
+    }
 });

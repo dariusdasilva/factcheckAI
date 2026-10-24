@@ -3,7 +3,10 @@
 import secrets
 
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.authtoken.models import Token
+from rest_framework.authtoken.serializers import AuthTokenSerializer
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 
@@ -39,6 +42,22 @@ def model_settings(request: Request) -> Response:
     rows = ModelSetting.objects.filter(user=request.user)
     out_serializer = ModelSettingSerializer(rows, many=True)
     return Response({"settings": out_serializer.data})
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def obtain_token(request: Request) -> Response:
+    """POST /api/v1/auth/token/ — exchange credentials for a DRF auth token.
+
+    The web app logs in here and stores the returned token, then sends it as
+    ``Authorization: Token <key>`` on every subsequent request (§2.1: token +
+    session auth for the web app).
+    """
+    serializer = AuthTokenSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    user = serializer.validated_data["user"]
+    token, _ = Token.objects.get_or_create(user=user)
+    return Response({"token": token.key})
 
 
 @api_view(["POST"])
