@@ -2,14 +2,15 @@ import time
 
 import requests
 
-from apps.inference.output import ModelVerdict, SYSTEM_PROMPT, parse_model_output
+from apps.inference.output import SYSTEM_PROMPT, ModelVerdict, parse_model_output
 from apps.inference.providers.base import BaseLLMProvider
-from apps.inference.types import InferenceResult
+from apps.inference.types import PROVIDER_OLLAMA, InferenceResult
+
 
 class OllamaProvider(BaseLLMProvider):
-    """Local Ollama provider."""
+    """Local Ollama provider (secondary tier, §2.2)."""
 
-    provider_id = "ollama"
+    provider_id = PROVIDER_OLLAMA
 
     def __init__(
         self,
@@ -21,6 +22,7 @@ class OllamaProvider(BaseLLMProvider):
         self.base_url = base_url
         self.model_id = model_id
         self.timeout = timeout
+        self.last_usage: tuple[int | None, int | None] = (None, None)
 
     def check(self, prompt: str, timeout: float | None = None) -> InferenceResult:
         start_time = time.time()
@@ -55,15 +57,12 @@ class OllamaProvider(BaseLLMProvider):
 
             raw_output = data["message"]["content"]
             latency_ms = int((time.time() - start_time) * 1000)
+            self.last_usage = (data.get("prompt_eval_count"), data.get("eval_count"))
             return parse_model_output(
                 raw_output,
                 prompt,
                 provider_used=self.provider_id,
                 latency_ms=latency_ms,
-                tokens_in=data.get("prompt_eval_count"),
-                tokens_out=data.get("eval_count"),
-                price_in_per_mtok=0.0,
-                price_out_per_mtok=0.0,
             )
         except Exception as e:
             raise RuntimeError(f"OllamaProvider error: {e}") from e

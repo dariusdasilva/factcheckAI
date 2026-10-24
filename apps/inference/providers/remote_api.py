@@ -4,12 +4,13 @@ import requests
 
 from apps.inference.output import SYSTEM_PROMPT, parse_model_output
 from apps.inference.providers.base import BaseLLMProvider
-from apps.inference.types import InferenceResult
+from apps.inference.types import PROVIDER_REMOTE_API, InferenceResult
+
 
 class RemoteLLMProvider(BaseLLMProvider):
-    """OpenRouter-compatible remote provider."""
+    """OpenRouter-compatible remote provider (primary tier)."""
 
-    provider_id = "remote_api"
+    provider_id = PROVIDER_REMOTE_API
 
     def __init__(
         self,
@@ -23,10 +24,15 @@ class RemoteLLMProvider(BaseLLMProvider):
         self.api_key = api_key
         self.model_id = model_id
         is_free_model = model_id.lower().endswith(":free")
-        self.input_price_per_mtok = 0.0 if is_free_model and input_price_per_mtok is None else input_price_per_mtok
-        self.output_price_per_mtok = 0.0 if is_free_model and output_price_per_mtok is None else output_price_per_mtok
+        self.input_price_per_mtok = (
+            0.0 if is_free_model and input_price_per_mtok is None else input_price_per_mtok
+        )
+        self.output_price_per_mtok = (
+            0.0 if is_free_model and output_price_per_mtok is None else output_price_per_mtok
+        )
         self.timeout = timeout
         self.endpoint = "https://openrouter.ai/api/v1/chat/completions"
+        self.last_usage: tuple[int | None, int | None] = (None, None)
 
     def check(self, prompt: str, timeout: float | None = None) -> InferenceResult:
         start_time = time.time()
@@ -61,22 +67,18 @@ class RemoteLLMProvider(BaseLLMProvider):
             raw_output = data["choices"][0]["message"]["content"]
             latency_ms = int((time.time() - start_time) * 1000)
             usage = data.get("usage") or {}
+            self.last_usage = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
             return parse_model_output(
                 raw_output,
                 prompt,
                 provider_used=self.provider_id,
                 latency_ms=latency_ms,
-                tokens_in=usage.get("prompt_tokens"),
-                tokens_out=usage.get("completion_tokens"),
-                price_in_per_mtok=self.input_price_per_mtok,
-                price_out_per_mtok=self.output_price_per_mtok,
             )
         except Exception as e:
             raise RuntimeError(f"RemoteLLMProvider error: {e}") from e
 
     def is_available(self) -> bool:
         try:
-            # Simplified health check
             response = requests.get("https://openrouter.ai/api/v1/models", timeout=5)
             return response.status_code == 200
         except Exception:

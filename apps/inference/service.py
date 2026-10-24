@@ -1,4 +1,12 @@
-"""Provider fallback orchestration, circuit breaking, deadlines, and spend caps."""
+"""Provider fallback orchestration, circuit breaking, deadlines, and spend caps.
+
+The service's public entry point ``check`` returns an ``InferenceOutcome`` whose
+``.result`` is the frozen ``InferenceResult``. The frozen type carries only the
+verdict contract; billing (price snapshot, token usage, cost) and the §2.2
+fail-state envelope (detail/retry_after/providers_tried) ride on ``InferenceOutcome``
+so Chunk A can persist them onto ``CheckRun``/``AuditLog`` without touching the
+frozen contract.
+"""
 
 import logging
 import math
@@ -9,7 +17,13 @@ import time
 from apps.inference.output import SYSTEM_PROMPT
 from apps.inference.providers.base import BaseLLMProvider
 from apps.inference.spend import CostEstimator, SpendManager
-from apps.inference.types import InferenceResult, InferenceStatus
+from apps.inference.types import (
+    DEFAULT_FAIL_RETRY_AFTER_S,
+    FAIL_STATE,
+    FALLBACK,
+    InferenceOutcome,
+    InferenceResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +88,7 @@ class CircuitBreaker:
                 for provider_id, until in self.cooldown_until.items()
                 if provider_id in provider_ids
             ]
-        return max(delays, default=self.cooldown_period)
+        return max(delays, default=DEFAULT_FAIL_RETRY_AFTER_S)
 
 
 def _call_with_deadline(provider: BaseLLMProvider, prompt: str, timeout: float):
@@ -84,7 +98,7 @@ def _call_with_deadline(provider: BaseLLMProvider, prompt: str, timeout: float):
     def invoke() -> None:
         try:
             result_queue.put((True, provider.check(prompt, timeout=timeout)))
-        except BaseException as error:  # Propagate provider exceptions to caller.
+        except BaseException as error:  # propagate provider exceptions to caller
             result_queue.put((False, error))
 
     worker = threading.Thread(target=invoke, daemon=True, name="inference-provider-call")
@@ -99,7 +113,7 @@ def _call_with_deadline(provider: BaseLLMProvider, prompt: str, timeout: float):
 
 
 class InferenceService:
-    """Orchestrate Remote API -> Ollama -> explicit fail state."""
+    """Orchestrate Remote API -> Ollama -> explicit fail state (§2.2)."""
 
     TOTAL_TIMEOUT_SECONDS = 90.0
 
@@ -123,15 +137,23 @@ class InferenceService:
     def _provider_id(provider: BaseLLMProvider) -> str:
         return getattr(provider, "provider_id", provider.__class__.__name__)
 
-    def _fail_state(self, started: float, providers_tried: list[str], detail: str) -> InferenceResult:
-        return InferenceResult(
+    def _fail_state(
+        self,
+        started: float,
+        providers_tried: list[str],
+        detail: str,
+    ) -> InferenceOutcome:
+        result = InferenceResult(
             verdict=None,
-            confidence=0.0,
+            confidence=None,
             evidence=[],
-            raw_model_output="",
-            provider_used="none",
+            raw_model_output=None,
+            provider_used=None,
             latency_ms=int((time.monotonic() - started) * 1000),
-            status=InferenceStatus.FAIL_STATE,
+            status=FAIL_STATE,
+        )
+        return InferenceOutcome(
+            result=result,
             detail=detail,
             retry_after=self.circuit_breaker.retry_after(providers_tried),
             providers_tried=providers_tried,
@@ -145,11 +167,13 @@ class InferenceService:
         *,
         spend_scope: str = "default",
         monthly_spend_cap: float | None = None,
-    ) -> InferenceResult:
+    ) -> InferenceOutcome:
         started = time.monotonic()
         providers_tried: list[str] = []
         if not self.providers:
-            return self._fail_state(started, providers_tried, "No inference providers are configured.")
+            return self._fail_state(
+                started, providers_tried, "No inference providers are configured."
+            )
 
         remote = self.providers[0]
         input_price = (
@@ -179,9 +203,6 @@ class InferenceService:
             providers_tried.append(provider_id)
             if index == 0 and not remote_allowed:
                 continue
-            remaining = self.total_timeout_seconds - (time.monotonic() - started)
-            if remaining <= 0:
-                break
             if not self.circuit_breaker.is_available(provider_id):
                 continue
             if index == 0:
@@ -215,34 +236,41 @@ class InferenceService:
                     raise ProviderCallTimeout("Total inference deadline exceeded")
                 if not isinstance(result, InferenceResult):
                     raise TypeError("Provider returned an invalid inference result")
-                if result.status is InferenceStatus.FAIL_STATE or result.verdict is None:
+                if result.status == FAIL_STATE or result.verdict is None:
                     raise ValueError("Provider returned no validated verdict")
 
                 self.circuit_breaker.record_success(provider_id)
                 result.provider_used = provider_id
                 result.latency_ms = int(elapsed * 1000)
-                result.providers_tried = providers_tried.copy()
                 if index > 0:
-                    result.status = InferenceStatus.FALLBACK
+                    result.status = FALLBACK
 
+                tokens_in, tokens_out = getattr(provider, "last_usage", (None, None))
                 if index == 0:
-                    result.price_in_per_mtok = input_price
-                    result.price_out_per_mtok = output_price
-                    if result.tokens_in is not None and result.tokens_out is not None:
+                    if tokens_in is not None and tokens_out is not None:
                         actual_cost = self.cost_estimator.cost_for_tokens(
-                            result.tokens_in,
-                            result.tokens_out,
-                            input_price,
-                            output_price,
+                            tokens_in, tokens_out, input_price, output_price
                         )
                     else:
                         actual_cost = estimated_cost
                     self.spend_manager.adjust_spend(actual_cost - estimated_cost, spend_scope)
-                    result.cost_usd = actual_cost
                     reservation_made = False
-                else:
-                    result.cost_usd = 0.0
-                return result
+                    return InferenceOutcome(
+                        result=result,
+                        tokens_in=tokens_in,
+                        tokens_out=tokens_out,
+                        price_in_per_mtok=input_price,
+                        price_out_per_mtok=output_price,
+                        cost_usd=actual_cost,
+                        providers_tried=providers_tried,
+                    )
+                return InferenceOutcome(
+                    result=result,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    cost_usd=0.0,
+                    providers_tried=providers_tried,
+                )
             except Exception as error:
                 logger.warning("Provider %s failed: %s", provider_id, error)
                 self.circuit_breaker.record_failure(provider_id)

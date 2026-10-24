@@ -4,7 +4,7 @@ import hashlib
 import math
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class CostEstimator:
@@ -90,17 +90,17 @@ class SpendManager:
 
     @staticmethod
     def _month_ttl() -> int:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if now.month == 12:
-            next_month = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+            next_month = datetime(now.year + 1, 1, 1, tzinfo=UTC)
         else:
-            next_month = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+            next_month = datetime(now.year, now.month + 1, 1, tzinfo=UTC)
         return max(1, int((next_month - now).total_seconds()))
 
     def _keys(self, scope: str) -> tuple[str, str]:
         if not isinstance(scope, (str, int)) or not str(scope):
             raise ValueError("Spend scope must identify a user or account")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         namespace = hashlib.sha256(str(scope).encode()).hexdigest()
         month = f"{now.year:04d}-{now.month:02d}"
         base = f"factchecker:inference:spend:{namespace}:{month}"

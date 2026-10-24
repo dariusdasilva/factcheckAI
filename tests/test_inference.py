@@ -11,7 +11,7 @@ from apps.inference.providers.ollama import OllamaProvider
 from apps.inference.providers.remote_api import RemoteLLMProvider
 from apps.inference.service import CircuitBreaker, InferenceService
 from apps.inference.spend import CostEstimator, SpendManager
-from apps.inference.types import InferenceResult, InferenceStatus
+from apps.inference.types import FAIL_STATE, FALLBACK, OK, InferenceResult
 
 
 class FakeCache:
@@ -43,11 +43,11 @@ def inference_result(verdict="true", provider="remote_api"):
     return InferenceResult(
         verdict=verdict,
         confidence=0.8,
-        evidence=["W1"] if verdict != "unverified" else [],
+        evidence=[{"id": "W1", "hop": "wiki"}] if verdict != "unverified" else [],
         raw_model_output='{"verdict":"true","confidence":0.8,"evidence":["W1"]}',
         provider_used=provider,
         latency_ms=1,
-        status=InferenceStatus.OK,
+        status=OK,
     )
 
 
@@ -59,7 +59,8 @@ def test_model_output_is_parsed_and_evidence_is_validated():
         latency_ms=10,
     )
     assert result.verdict == "false"
-    assert result.evidence == ["W1"]
+    assert result.evidence == [{"id": "W1", "hop": "wiki"}]
+    assert result.status == OK
 
     with pytest.raises(ValueError):
         parse_model_output(
@@ -94,8 +95,9 @@ def test_remote_provider_parses_real_response_and_passes_timeout():
         result = provider.check("Claim. Evidence: [W1]", timeout=4.5)
 
     assert result.verdict == "true"
-    assert result.tokens_in == 20
+    assert result.evidence == [{"id": "W1", "hop": "wiki"}]
     assert result.provider_used == "remote_api"
+    assert provider.last_usage == (20, 12)
     assert post.call_args.kwargs["timeout"] == 4.5
     assert post.call_args.kwargs["json"]["max_tokens"] == 512
 
@@ -116,7 +118,8 @@ def test_ollama_provider_parses_response_and_keeps_context_options():
         result = provider.check("Claim. No evidence.", timeout=3)
 
     assert result.verdict == "unverified"
-    assert result.tokens_out == 10
+    assert result.evidence == []
+    assert provider.last_usage == (30, 10)
     assert post.call_args.kwargs["timeout"] == 3
     assert post.call_args.kwargs["json"]["options"]["num_ctx"] == 8192
 
@@ -132,6 +135,7 @@ class FakeProvider(BaseLLMProvider):
         self.delay = delay
         self.received_timeout = None
         self.calls = 0
+        self.last_usage = (None, None)
 
     def check(self, prompt, timeout=None):
         self.calls += 1
@@ -155,13 +159,14 @@ def test_service_falls_back_to_local_after_remote_error():
     local = LocalProvider(result=inference_result(provider="ollama"))
     service = InferenceService([remote, local], total_timeout_seconds=1)
 
-    result = service.check("Claim. Evidence: [W1]")
+    outcome = service.check("Claim. Evidence: [W1]")
+    result = outcome.result
 
-    assert result.status is InferenceStatus.FALLBACK
+    assert result.status == FALLBACK
     assert result.provider_used == "ollama"
     assert result.verdict == "true"
     assert remote.received_timeout is not None
-    assert result.providers_tried == ["remote_api", "ollama"]
+    assert outcome.providers_tried == ["remote_api", "ollama"]
 
 
 def test_both_providers_fail_with_explicit_fail_state():
@@ -170,12 +175,13 @@ def test_both_providers_fail_with_explicit_fail_state():
         LocalProvider(error=RuntimeError("local down")),
     ])
 
-    result = service.check("A claim")
+    outcome = service.check("A claim")
 
-    assert result.status is InferenceStatus.FAIL_STATE
-    assert result.verdict is None
-    assert result.providers_tried == ["remote_api", "ollama"]
-    assert result.retry_after == 60
+    assert outcome.result.status == FAIL_STATE
+    assert outcome.result.verdict is None
+    assert outcome.result.evidence == []
+    assert outcome.providers_tried == ["remote_api", "ollama"]
+    assert outcome.retry_after == 60
 
 
 def test_spend_cap_skips_remote_and_uses_local_provider():
@@ -186,27 +192,28 @@ def test_spend_cap_skips_remote_and_uses_local_provider():
         spend_manager=SpendManager(monthly_cap=0),
     )
 
-    result = service.check("Claim with non-zero input cost")
+    outcome = service.check("Claim with non-zero input cost")
 
-    assert result.status is InferenceStatus.FALLBACK
+    assert outcome.result.status == FALLBACK
     assert remote.calls == 0
     assert local.calls == 1
 
 
 def test_remote_success_returns_price_and_usage_snapshot():
-    result = inference_result()
-    result.tokens_in = 100
-    result.tokens_out = 50
-    provider = FakeProvider(result=result)
+    provider = FakeProvider(result=inference_result())
+    provider.last_usage = (100, 50)
     manager = SpendManager(monthly_cap=1)
     service = InferenceService([provider], spend_manager=manager)
 
-    completed = service.check("Claim with evidence [W1]")
+    outcome = service.check("Claim with evidence [W1]")
 
-    assert completed.price_in_per_mtok == 1.0
-    assert completed.price_out_per_mtok == 1.0
-    assert completed.cost_usd == pytest.approx(0.00015)
-    assert manager.current_spend == pytest.approx(completed.cost_usd)
+    assert outcome.result.status == OK
+    assert outcome.price_in_per_mtok == 1.0
+    assert outcome.price_out_per_mtok == 1.0
+    assert outcome.tokens_in == 100
+    assert outcome.tokens_out == 50
+    assert outcome.cost_usd == pytest.approx(0.00015)
+    assert manager.current_spend == pytest.approx(outcome.cost_usd)
 
 
 def test_service_enforces_wall_clock_deadline():
@@ -214,11 +221,11 @@ def test_service_enforces_wall_clock_deadline():
     service = InferenceService([provider], total_timeout_seconds=0.03)
 
     started = time.monotonic()
-    result = service.check("A claim")
+    outcome = service.check("A claim")
     elapsed = time.monotonic() - started
 
-    assert result.status is InferenceStatus.FAIL_STATE
-    assert result.verdict is None
+    assert outcome.result.status == FAIL_STATE
+    assert outcome.result.verdict is None
     assert elapsed < 0.15
     assert provider.received_timeout <= 0.05
 
@@ -279,6 +286,6 @@ def test_remote_catalog_converts_openrouter_per_token_prices_and_caches():
 
 
 def test_empty_provider_list_returns_fail_state_not_exception():
-    result = InferenceService([]).check("Claim")
-    assert result.status is InferenceStatus.FAIL_STATE
-    assert result.verdict is None
+    outcome = InferenceService([]).check("Claim")
+    assert outcome.result.status == FAIL_STATE
+    assert outcome.result.verdict is None

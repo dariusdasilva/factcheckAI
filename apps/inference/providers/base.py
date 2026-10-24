@@ -1,22 +1,22 @@
 from abc import ABC, abstractmethod
+
 from apps.inference.types import InferenceResult
 
+
 class BaseLLMProvider(ABC):
-    """Base interface for LLM providers used in the fallback chain."""
+    """Base interface for LLM providers used in the fallback chain.
+
+    ``check`` returns the frozen ``InferenceResult`` (contract) and must honour
+    the per-call timeout. Providers raise on any failure (network, timeout,
+    invalid model output) so the service can fail over and trip its breaker.
+    """
 
     provider_id = "provider"
 
     @abstractmethod
     def check(self, prompt: str, timeout: float | None = None) -> InferenceResult:
-        """
-        Sends a prompt to the model and returns an InferenceResult.
-        Implementations must honor the supplied per-call timeout.
-        Should raise a specific exception on network/provider failure
-        to trigger the circuit breaker.
-        """
-        pass
+        """Send a prompt to the model and return a validated InferenceResult."""
 
     @abstractmethod
     def is_available(self) -> bool:
-        """Check if the provider is reachable and healthy."""
-        pass
+        """Return True when the provider is reachable and healthy."""
