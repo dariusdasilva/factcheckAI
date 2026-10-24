@@ -19,9 +19,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         ]
     };
 
-    // Populate dropdowns
-    apiSelect.innerHTML = GEMMA_MODELS.api.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
-    localSelect.innerHTML = GEMMA_MODELS.local.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+    // Populate dropdowns without innerHTML (no dynamic HTML injection).
+    function populateSelect(select, models) {
+        models.forEach(m => {
+            const option = document.createElement('option');
+            option.value = m.id;
+            option.textContent = m.name;
+            select.appendChild(option);
+        });
+    }
+    populateSelect(apiSelect, GEMMA_MODELS.api);
+    populateSelect(localSelect, GEMMA_MODELS.local);
 
     // Tab logic
     const tabApi = document.getElementById('tab-api');
@@ -58,7 +66,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             local_model: localSelect.value
         };
         chrome.storage.local.set(settings, () => {
-            statusEl, statusEl.innerText = "Settings saved!";
+            statusEl.innerText = "Settings saved!";
             statusEl.style.color = "#10b981";
             setTimeout(() => { statusEl.innerText = ""; }, 3000);
         });

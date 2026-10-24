@@ -47,26 +47,40 @@ function injectVerdictBadge(data) {
         fontFamily: 'Inter, sans-serif'
     });
 
-    // 3. Handle Fail State vs Success
+    // 3. Handle Fail State vs Success (build DOM with textContent, never innerHTML)
     if (data.status === 'fail_state') {
         badge.style.borderLeftColor = '#94a3b8';
-        badge.innerHTML = `
-            <span style="color: #a1a1aa;">⚠️ Service Degraded: Result Unavailable</span>
-            <button id="fc-close" style="background:none; border:none; color:#fff; cursor:pointer; font-weight:bold;">×</button>
-        `;
+        const span = document.createElement('span');
+        span.style.color = '#a1a1aa';
+        span.textContent = '⚠️ Service Degraded: Result Unavailable';
+        badge.appendChild(span);
     } else {
         const verdictColor = data.verdict === 'true' ? '#10b981' : '#ef4444';
-        badge.innerHTML = `
-            <span style="color: ${verdictColor}; font-weight: 800; text-transform: uppercase;">${data.verdict}</span>
-            <span style="color: #a1a1aa; font-weight: 400;">${(data.confidence * 100).toFixed(0)}% Confidence</span>
-            <button id="fc-close" style="background:none; border:none; color:#fff; cursor:pointer; font-weight:bold; margin-left: 8px;">×</button>
-        `;
+        const verdictSpan = document.createElement('span');
+        verdictSpan.style.color = verdictColor;
+        verdictSpan.style.fontWeight = '800';
+        verdictSpan.style.textTransform = 'uppercase';
+        verdictSpan.textContent = data.verdict;
+        badge.appendChild(verdictSpan);
+
+        const confidenceSpan = document.createElement('span');
+        confidenceSpan.style.color = '#a1a1aa';
+        confidenceSpan.style.fontWeight = '400';
+        confidenceSpan.textContent = `${(data.confidence * 100).toFixed(0)}% Confidence`;
+        badge.appendChild(confidenceSpan);
     }
+
+    const closeButton = document.createElement('button');
+    closeButton.id = 'fc-close';
+    closeButton.style.cssText =
+        'background:none; border:none; color:#fff; cursor:pointer; font-weight:bold; margin-left:8px;';
+    closeButton.textContent = '×';
+    badge.appendChild(closeButton);
 
     document.body.appendChild(badge);
 
     // 4. Handle dismissal
-    badge.querySelector('#fc-close').addEventListener('click', () => {
+    closeButton.addEventListener('click', () => {
         badge.remove();
     });
 }

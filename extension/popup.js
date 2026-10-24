@@ -77,10 +77,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                 data: mockData 
             });
 
-            resultArea.innerHTML = `
-                <div class="verdict-badge" style="background: ${mockData.status === 'fail_state' ? '#444' : '#10b981'}; color: #000;">${mockData.status === 'fail_state' ? 'DEGRADED' : 'VERDICT: ' + mockData.verdict.toUpperCase()}</div>
-                <div style="color: #a1a1aa; font-size: 0.8rem;">Badge injected onto page!</div>
-            `;
+            resultArea.replaceChildren();
+            const badge = document.createElement('div');
+            badge.className = 'verdict-badge';
+            const degraded = mockData.status === 'fail_state';
+            badge.style.background = degraded ? '#444' : '#10b981';
+            badge.style.color = '#000';
+            badge.textContent = degraded ? 'DEGRADED' : 'VERDICT: ' + mockData.verdict.toUpperCase();
+            resultArea.appendChild(badge);
+
+            const note = document.createElement('div');
+            note.style.color = '#a1a1aa';
+            note.style.fontSize = '0.8rem';
+            note.textContent = 'Badge injected onto page!';
+            resultArea.appendChild(note);
         } catch (e) {
             resultArea.innerHTML = `<div style="color: #ef4444;">Error connecting to server.</div>`;
         } finally {
