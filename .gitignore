@@ -32,3 +32,6 @@ Thumbs.db
 models/
 *.gguf
 ollama_data/
+
+# CI test reports
+reports/
