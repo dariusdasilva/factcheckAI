@@ -1,172 +1,237 @@
 # FactCheckAI
 
-![CI](https://github.com/dariusdasilva/factcheckAI/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/dariusdasilva/factcheckAI_AI-SLOP_HACKATHON_PROJECT/actions/workflows/ci.yml/badge.svg)](https://github.com/dariusdasilva/factcheckAI_AI-SLOP_HACKATHON_PROJECT/actions/workflows/ci.yml)
 
-A fact-checking assistant: submit a claim, the system gathers Wikipedia evidence
-(and the sources those articles cite), runs it past a Gemma model, and returns a
-verdict with evidence and a confidence rating — served by one Django REST API to
-both a web app and a Firefox extension.
+FactCheckAI checks claims using Wikipedia articles and their cited sources, then
+asks a Gemma model for a structured verdict. One Django REST API supports a web
+app and a Firefox extension. Remote inference uses OpenRouter, with local Ollama
+as the fallback tier.
 
-**The core reliability law (AGENTS.md §2):** the system *never fabricates a verdict*.
-If inference is unavailable, responses carry `"status": "fail_state"` and the UIs
-show a degradation banner — never a plausible-looking made-up answer.
+**Development status:** this is a student project under active development, with
+known security, reliability and client-integration gaps. It is not production
+ready. The [delivery plan](DELIVERY_PLAN.md) describes the remaining work,
+acceptance criteria, ownership and release gates. Track implementation in the
+[FAI-01–FAI-48 GitHub backlog](https://github.com/dariusdasilva/factcheckAI_AI-SLOP_HACKATHON_PROJECT/issues?q=is%3Aissue%20FAI-).
 
-## Status (WORK_CHUNKS.md)
+## Reliability contract
 
-| Chunk | Scope | Status |
+The system must never fabricate a verdict. Preserve the public lifecycle
+`queued | running | ok | fallback | fail_state`:
+
+- `ok`: validated remote inference result.
+- `fallback`: validated result from the fallback tier.
+- `fail_state`: inference unavailable or invalid; no verdict or confidence.
+
+Insufficient evidence is an honest `unverified` verdict from available inference.
+It is different from inference being unavailable. Clients must show unavailable
+results neutrally. The extension still contains mock verdict generation at the
+audit baseline; replacing it is a mandatory release blocker, not an accepted
+exception to this contract.
+
+## What exists and what remains
+
+| Area | Current implementation | Remaining work |
 |---|---|---|
-| **A** | Backend core: skeleton, models, REST contract, queue/throttle/auth, CI | ✅ done |
-| **B** | Inference engine: fallback chain, circuit breaker, catalog, spend | pending (A's contract frozen) |
-| **C** | Wikipedia evidence pipeline (two-hop crawl) | pending |
-| **D** | Web app + Firefox MV3 extension | pending |
+| Backend | Authenticated submit/poll/history API, models, migrations and Django-Q2 worker | Atomic execution, restart recovery, durable spending and production serving |
+| Inference | Remote/local providers, structured parsing, fallback service and internal catalog/spend code | Authoritative citation validation, shared breaker state, complete deadlines and live catalog/spend API integration |
+| Evidence | Wikipedia discovery, two-hop retrieval, extraction, packing and caching | Capture provenance, SSRF protection, cross-worker crawl coordination and retrieval quality |
+| Web app | Backend-connected submission, polling and history | Safe rendering, recoverable workflows, settings, accessibility and browser acceptance |
+| Firefox extension | MV3 popup, options and capture scaffold | Real API submission, configuration, lifecycle/status handling and runtime verification |
+| Delivery | CI configuration and documented architecture | Meaningful browser tests, release packaging, deployment, evaluation and operational evidence |
+
+This table describes code and known gaps; it does not certify runtime readiness.
+The detailed plan groups all 48 backlog tasks into 19 work packages and seven
+acceptance milestones. Start with the seven P0 blockers before release.
 
 ## Stack
 
-Python 3.12 · Django 5 + DRF · django-q2 (ORM broker — no Redis for dev) ·
-SQLite (dev) / PostgreSQL (prod) · Gemma via OpenRouter (remote) and Ollama
-`gemma4:e4b-it-qat` (local tier) · JavaScript web app + MV3 extension.
+Python 3.12 · Django 5 + Django REST Framework · Django-Q2 with an ORM broker ·
+SQLite for local development / PostgreSQL for deployment · OpenRouter + Ollama ·
+vanilla JavaScript web app + Firefox MV3 extension.
 
-## Quickstart
+The canonical local model is `gemma4:e4b-it-qat`. Model availability and provider
+capabilities must be verified against the configured endpoints; documentation is
+not a live model catalog.
+
+## Local setup
+
+Clone the repository and enter its directory:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
+git clone https://github.com/dariusdasilva/factcheckAI_AI-SLOP_HACKATHON_PROJECT.git
+cd factcheckAI_AI-SLOP_HACKATHON_PROJECT
+```
 
-cp env.example .env          # defaults are fine for local dev
+Create and activate a Python 3.12 virtual environment.
+
+**Windows PowerShell:**
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+Copy-Item env.example .env
+```
+
+**macOS / Linux:**
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+cp env.example .env
+```
+
+Edit `.env` for your environment. Keep it private and never commit credentials.
+For remote inference, configure `OPENROUTER_API_KEY`. The worker also includes an
+alternative Gemini provider selected when only `GEMINI_API_KEY` is configured;
+OpenRouter takes precedence when both keys are present. Compatibility and release
+scope for the alternative provider still require explicit acceptance.
+
+For local inference, install Ollama separately and pull the configured model:
+
+```bash
+ollama pull gemma4:e4b-it-qat
+```
+
+Ensure the Ollama service is running and reachable from the worker. By default,
+`OLLAMA_BASE_URL` is `http://localhost:11434`. With no remote key configured, the
+worker attempts the local tier. If no usable provider is available, the intended
+result is `fail_state`.
+
+Initialize the database and create an account:
+
+```bash
 python manage.py migrate
-```
-
-Run the API and the task worker in two terminals:
-
-```bash
-python manage.py runserver    # terminal 1: http://127.0.0.1:8000
-python manage.py qcluster     # terminal 2: picks up queued checks
-```
-
-Sanity-check the public health endpoint:
-
-```bash
-curl -s http://127.0.0.1:8000/api/v1/health/
-# {"status":"ok","service":"factcheckai-api","components":{"database":"ok","queue":"ok"}}
-```
-
-### Trying the checks API
-
-Auth is session (web app) or token (extension). To mint a token for manual testing:
-
-```bash
 python manage.py createsuperuser
+```
+
+Run these commands in two terminals, activating the same virtual environment in
+each:
+
+```bash
+python manage.py runserver    # terminal 1
+python manage.py qcluster     # terminal 2
+```
+
+Open the development web app at <http://127.0.0.1:8000/> and the admin at
+<http://127.0.0.1:8000/admin/>. The worker is required to process queued checks.
+The current development SPA routes are enabled by development settings;
+production web/static serving is tracked separately.
+
+The public `/api/v1/health/` endpoint checks database connectivity and queue
+configuration. Its current response does **not** prove that a worker is consuming
+jobs or that the selected inference models are available.
+
+## Trying the API
+
+Create a DRF token for your local test account:
+
+```bash
 python manage.py shell
 ```
 
 ```python
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from rest_framework.authtoken.models import Token
 
-u = User.objects.get(username="your-admin")
-print(Token.objects.get_or_create(user=u)[0].key)   # copy this
+user = get_user_model().objects.get(username="your-admin")
+print(Token.objects.get_or_create(user=user)[0].key)
 ```
 
-Then submit a claim and poll it (202-then-poll contract):
+Treat the printed token as a secret. The following example uses Bash; substitute
+your token locally and poll the returned `check_id` rather than assuming an ID.
 
 ```bash
-TOKEN=...
+TOKEN=your-local-token
 curl -s -X POST http://127.0.0.1:8000/api/v1/checks/ \
   -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
-  -d '{"claim": "Drinking coffee cures the common cold."}'
-# 202 {"check_id": 1, "status": "queued"}
+  -d '{"claim":"Drinking coffee cures the common cold."}'
+# Submission returns HTTP 202 with check_id and status: queued.
 
-curl -s http://127.0.0.1:8000/api/v1/checks/1/ -H "Authorization: Token $TOKEN"
+curl -s http://127.0.0.1:8000/api/v1/checks/RETURNED_CHECK_ID/ \
+  -H "Authorization: Token $TOKEN"
 ```
 
-### Extension API keys
-
-The extension does not use DRF tokens. Mint its long-lived key once and send it
-the same way (`Bearer` works too; both are accepted):
+Issue an extension key through an authenticated request:
 
 ```bash
-# while authenticated as the user (session or token)
-curl -s -X POST http://127.0.0.1:8000/api/v1/auth/keys/
-# 201 {"id": 1, "key": "fcai_…", "created_at": "…"}   ← shown once, stored hashed
-
-curl -s http://127.0.0.1:8000/api/v1/checks/ -H "Authorization: Token fcai_…"
+curl -s -X POST http://127.0.0.1:8000/api/v1/auth/keys/ \
+  -H "Authorization: Token $TOKEN"
 ```
 
-A revoked or unknown `fcai_…` key returns `401` — never a silent pass.
+The `fcai_…` key is shown once and stored hashed by the backend. Send it as
+`Authorization: Token fcai_…` or `Authorization: Bearer fcai_…`. The extension's
+end-to-end configuration and API integration remain backlog work.
 
-> Until Chunk B lands, the worker is a placeholder that completes runs as
-> `ok` / `unverified` after a short delay (`FAKE_CHECK_LATENCY_S`, default 2 s).
-> `unverified` is the honest "no model judged this" mark — never a fabricated verdict.
+## API surface
 
-## API surface (v1)
+Base path: `/api/v1/`. Checks and account endpoints require authentication.
+The default authenticated-user throttle is 100 requests/day; polling quota
+semantics remain a delivery-plan decision. Health is public and exempt.
 
-Base: `/api/v1/` · JSON only · session or token auth · 100 req/day/user throttle
-(health is exempt — clients use it as a pre-flight degradation probe).
-
-| Method | Path | Purpose |
+| Method | Path | Purpose / current limitation |
 |---|---|---|
-| `POST` | `/api/v1/checks/` | Submit a claim → `202` + `check_id` |
-| `GET` | `/api/v1/checks/{id}/` | Poll result — terminal statuses `ok` \| `fallback` \| `fail_state` |
-| `GET` | `/api/v1/checks/` | List your past checks (paginated) |
-| `GET` | `/api/v1/health/` | Public liveness: DB + queue components |
-| `GET` | `/api/v1/models/` | Model picker data — **stub** until Chunk B3 (live OpenRouter/Ollama catalogs) |
-| `PUT` | `/api/v1/settings/model/` | Set your default model per tier (`api` / `local`) |
-| `GET` | `/api/v1/spend/` | Estimated spend — **stub** until Chunk B4's ledger |
-| `POST` | `/api/v1/sources/` | Extension pushes scraped page text into the crawl cache |
-| `POST` | `/api/v1/auth/keys/` | Create an extension bearer key (shown once, stored hashed) |
+| `POST` | `/checks/` | Submit a claim; returns HTTP 202 and `check_id` |
+| `GET` | `/checks/{id}/` | Poll your check result |
+| `GET` | `/checks/` | Paginated history for the authenticated user |
+| `GET` | `/health/` | Database and queue-configuration probe; readiness incomplete |
+| `GET` | `/models/` | Stub; live cached catalog integration outstanding |
+| `PUT` | `/settings/model/` | Store per-tier model preferences; capability validation outstanding |
+| `GET` | `/spend/` | Stub; durable, user-scoped ledger integration outstanding |
+| `POST` | `/sources/` | Accept captured page text; trusted-cache isolation outstanding |
+| `POST` | `/auth/keys/` | Create a hashed extension API key, returned once |
 
-Frozen contracts (names, status strings, `InferenceResult`) live in
-`apps/checks/contracts.py` — changes there are cross-chunk changes and need an
-all-hands call.
+Shared contracts live in `apps/checks/contracts.py` and the inference types.
+Coordinate changes across the backend, inference, evidence and client lanes.
 
-## Quality checks
+## Checks and contributing
 
-```bash
-ruff check .
-pytest
-```
+Read [ARCHITECTURE.md](ARCHITECTURE.md), [WORK_CHUNKS.md](WORK_CHUNKS.md) and
+[CI_CD.md](CI_CD.md), in that order. Follow [AGENTS.md](AGENTS.md) and the
+[delivery plan](DELIVERY_PLAN.md) for ownership and implementation sequencing.
 
-CI runs both on every push (`.github/workflows/ci.yml`). Tests are **hermetic** —
-no live API calls anywhere; networked chunks use recorded fixtures (see
-CI_CD.md). Nobody merges with a red `main`.
-
-Extension checks (Chunk D, once `extension/` exists):
+Use feature branches and PRs to `main`. Include regression tests and acceptance
+evidence with each fix; keep applied migrations unchanged and add new migrations.
 
 ```bash
+python -m ruff check .
+python -m pytest
 npx web-ext lint --source-dir=extension
 ```
 
-## Configuration
+Run the extension check when changing extension code. Tests must use fixtures,
+not live provider or Wikipedia calls. The current web `npm test` is a placeholder
+that exits successfully without testing behaviour; a green command alone is not
+browser acceptance. Live-model evaluation, Firefox runtime checks, deployment,
+restore and load tests are separate release gates.
 
-Secrets and deployment-specific values come from env vars or the gitignored
-`.env` (django-environ). See `env.example` for every variable and its default.
-Never commit secrets; `.env` is gitignored.
+## Configuration and deployment
 
-## Repo layout
+See [env.example](env.example) and `config/settings/` for supported settings.
+Configure database, allowed hosts, CORS, provider keys and Ollama connectivity for
+the actual environment. Keep `.env` and provider secrets out of the extension and
+out of Git.
 
+Deployment is unfinished. A supported release needs a supervised web process and
+Q2 worker, persistent PostgreSQL, migrations, web/static serving, HTTPS, verified
+provider access, monitoring, backups and a tested rollback procedure. A hosted
+worker cannot reach a laptop's Ollama through its own `localhost` address.
+
+[CI_CD.md](CI_CD.md) records the original deployment design; use the delivery
+plan's release gates to track its outstanding implementation. Tag-based extension
+release automation also needs repair and verification before relying on it.
+
+## Repository map
+
+```text
+config/            Django settings, URLs and WSGI/ASGI
+apps/checks/       claims, checks, evidence, contracts and worker integration
+apps/accounts/     API keys and per-user model preferences
+apps/inference/    providers, structured output, fallback, catalog and spending
+apps/sources/      Wikipedia discovery, retrieval, transport and evidence packing
+frontend/web/      vanilla JavaScript web client
+extension/         Firefox MV3 client
+tests/             backend and fixture-based regression suite
+DELIVERY_PLAN.md   remaining work, ownership, sequencing and release gates
 ```
-config/            Django settings (base/dev/prod), urls, wsgi/asgi
-apps/checks/       claims, check runs, evidence, crawl cache, contracts, worker task
-apps/accounts/     hashed API keys, per-tier model settings
-apps/inference/    Chunk B (fallback chain, circuit breaker)
-apps/sources/      Chunk C (Wikipedia pipeline)
-frontend/web/      Chunk D web app
-extension/         Chunk D Firefox MV3 extension
-tests/             pytest suite (hermetic)
-```
-
-**Further reading:** `ARCHITECTURE.md` (system design, §2.2 fallback chain, §3
-REST contract) · `WORK_CHUNKS.md` (the four work packages + acceptance tests) ·
-`CI_CD.md` (pipelines, Render deploy, tag-based extension releases) · `AGENTS.md`
-(rules for AI agents and humans working side by side).
-
-## Deploying
-
-Backend deploys on Render per CI_CD.md: `pip install -r requirements.txt`, then
-`python manage.py migrate && gunicorn config.wsgi` with `DJANGO_SECRET_KEY`
-(required — the app refuses to start without it) / `DJANGO_DEBUG=0` /
-`DJANGO_ALLOWED_HOSTS` (your Render hostname, e.g.
-`factcheckai.onrender.com`) / `OPENROUTER_API_KEY` set. Postgres via
-`DATABASE_URL`. Ollama stays on the demo laptop (the fallback chain demo is
-API-down → local Ollama by design). Tag `v*` to auto-build the extension zip
-into a GitHub Release.
