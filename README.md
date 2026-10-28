@@ -13,6 +13,16 @@ ready. The [delivery plan](DELIVERY_PLAN.md) describes the remaining work,
 acceptance criteria, ownership and release gates. Track implementation in the
 [FAI-01–FAI-48 GitHub backlog](https://github.com/dariusdasilva/factcheckAI_AI-SLOP_HACKATHON_PROJECT/issues?q=is%3Aissue%20FAI-).
 
+## Portfolio goal and hosting budget
+
+The initial release is an employer-facing portfolio demo, targeting **zero recurring hosting cost** with optional, explicitly capped inference spending. Occasional backend downtime and cold starts are acceptable. A paid domain and always-on model hosting are optional future work.
+
+Planned entry points are **Try the demo**, **Watch the walkthrough** and **View the code**. The public showcase will provide screenshots, architecture, a walkthrough and clearly labelled recorded examples without requiring an account. These assets and the hosted showcase are planned, not yet delivered. Sample results must never appear to be newly computed checks.
+
+The full application remains runnable locally. A live hosted backend is optional and will only expose features that pass the applicable security, correctness and spending checks. If it is unavailable, visitors should still be able to explore the showcase and see an honest service status.
+
+See the [portfolio delivery plan](PORTFOLIO_PLAN.md) for initial acceptance and the [full delivery roadmap](DELIVERY_PLAN.md) for the retained 48-task backlog. Production-scale hosting and operational requirements do not block publishing a static showcase; unfinished application tasks remain open.
+
 ## Reliability contract
 
 The system must never fabricate a verdict. Preserve the public lifecycle
@@ -41,7 +51,9 @@ exception to this contract.
 
 This table describes code and known gaps; it does not certify runtime readiness.
 The detailed plan groups all 48 backlog tasks into 19 work packages and seven
-acceptance milestones. Start with the seven P0 blockers before release.
+acceptance milestones for the full application. The seven P0 tasks block that
+application release; a static portfolio showcase has its own narrower acceptance
+checklist and must not expose unsafe live features.
 
 ## Stack
 

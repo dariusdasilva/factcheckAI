@@ -2,6 +2,14 @@
 
 Prepared 26 October 2026 for the existing FAI-01–FAI-48 backlog. Planning baseline: repository commit c245c28, clean working tree when checked; live Super Productivity read confirms 48 tasks, all open. This document plans implementation; it does not mark tasks done, change application code, deploy, or create replacement tasks.
 
+## Approved initial target: employer-facing portfolio demo
+
+The owner has selected a portfolio release with a target of zero recurring hosting cost and optional, explicitly capped API spending. Continuous uptime, a paid domain, paid managed infrastructure and continuously hosted Ollama are not initial requirements. See [PORTFOLIO_PLAN.md](PORTFOLIO_PLAN.md) for the initial delivery sequence and acceptance checklist.
+
+**Release profiles:** the initial static showcase is separate from the real application. It may publish screenshots, a walkthrough and visibly labelled recorded examples while the backend is offline. It must not expose unfinished live API paths or distribute an unsafe extension as ready. Any optional hosted live checks require the security, correctness, resource and spending controls for every exposed path. Local setup retains the intended remote/Ollama/fail-state contract.
+
+**How to read the rest of this document:** the 19 packages, M0–M6 schedule, estimates and comprehensive release gates below describe the full intended application/production roadmap. They are retained for future work, not a prerequisite for publishing a static portfolio showcase. Their estimates are not estimates for the smaller portfolio release. All seven P0 tasks remain blockers for the full application release; a static showcase neither waives them nor marks them complete. Existing task priorities and acceptance criteria remain unchanged. Deferred production capabilities stay open and must not be advertised as delivered.
+
 ## 1. Recommended approach
 
 Run four coordinated lanes—A backend/integration, B inference, C evidence and D clients—with A maintaining the shared contracts and merge queue. Fix trust and no-fabrication defects immediately, then make attempts/spending/execution durable, complete the API and both clients, and prove the actual deployment before releasing. Tests and documentation develop with each change; the later assurance packages finish coverage rather than start it.
@@ -24,7 +32,7 @@ Decisions marked settled in ARCHITECTURE.md stay settled. Record the following r
 
 | Decision | Recommended starting position | Owner | Needed before |
 |---|---|---|---|
-| Supported launch topology | Keep laptop demo and hosted production as separately tested profiles; choose the actual first launch target. Specify where Ollama runs and how workers securely reach it. | A + product owner | WP12 deployment acceptance |
+| Supported launch topology | Initial target decided: free static employer showcase plus documented local application; optional sleeping live demo only after exposed-path acceptance. Hosted production and always-on Ollama remain future profiles. | A + product owner | WP12 deployment acceptance |
 | Shared state | PostgreSQL is authoritative for money, reservations, attempts and leases. For breaker/crawl coordination, choose a DB-backed mechanism first unless a managed Redis service is already part of the deployment. LocMem is dev-only convenience, not proof of shared enforcement. Keep Q2's ORM broker. | A + B + C | WP04/06/07/08 implementation |
 | Account provision | Retain explicit admin-provisioned access for the first supported release unless public self-registration is required; do not build both paths by default. Define recovery/key lifecycle accordingly. | Product owner + A/D | WP11 account work |
 | Billing uncertainty | Preserve reservations for ambiguous paid requests, track reconciliation and operator-wide provider budget separately from per-user caps. Define what the UI calls estimated versus actual. | A + B + account owner | WP06 |
