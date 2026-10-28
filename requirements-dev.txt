@@ -6,3 +6,8 @@ pytest-cov>=5.0
 ruff>=0.5
 requests-mock>=1.12
 # 'responses' optional second HTTP mocking library — pick one per convention after Chunk C starts
+
+# CI forbids accidental live provider/crawler traffic.
+pytest-socket>=0.7
+# Vulnerability audit of the resolved CI environment.
+pip-audit>=2.7

@@ -1,8 +1,7 @@
 # FactCheckAI — requirements
-# Best-guess for ALL four work chunks (see WORK_CHUNKS.md). Pin Loosely (>=), install,
-# remove anything we don't end up using before deploy. Newly-needed packages get added
-# here as we discover them; before shipping/demo, run `pip freeze > requirements-frozen.txt`
-# and deploy from that for reproducibility.
+# Supported dependency ranges for the four work chunks (see WORK_CHUNKS.md).
+# CI installs the complete hash-locked requirements-ci.txt environment. Regenerate
+# that lock after changing these inputs; see CI_CD.md. Never freeze a personal env.
 
 # --- Chunk A: Django backend core ----------------------------------------------------
 Django>=5.0,<6.0

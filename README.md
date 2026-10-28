@@ -207,15 +207,19 @@ Use feature branches and PRs to `main`. Include regression tests and acceptance
 evidence with each fix; keep applied migrations unchanged and add new migrations.
 
 ```bash
+python -m pip install --require-hashes -r requirements-ci.txt
 python -m ruff check .
-python -m pytest
-npx web-ext lint --source-dir=extension
+python -m pytest --disable-socket
+npm ci --ignore-scripts
+npm run extension:lint
+npm --prefix frontend/web ci --ignore-scripts
+npm --prefix frontend/web test
 ```
 
 Run the extension check when changing extension code. Tests must use fixtures,
-not live provider or Wikipedia calls. The current web `npm test` is a placeholder
-that exits successfully without testing behaviour; a green command alone is not
-browser acceptance. Live-model evaluation, Firefox runtime checks, deployment,
+not live provider or Wikipedia calls. The web `npm test` runs offline API-client
+contract tests; these do not establish browser or Firefox runtime acceptance.
+Live-model evaluation, Firefox runtime checks, deployment,
 restore and load tests are separate release gates.
 
 ## Configuration and deployment
@@ -230,9 +234,10 @@ Q2 worker, persistent PostgreSQL, migrations, web/static serving, HTTPS, verifie
 provider access, monitoring, backups and a tested rollback procedure. A hosted
 worker cannot reach a laptop's Ollama through its own `localhost` address.
 
-[CI_CD.md](CI_CD.md) records the original deployment design; use the delivery
-plan's release gates to track its outstanding implementation. Tag-based extension
-release automation also needs repair and verification before relying on it.
+[CI_CD.md](CI_CD.md) documents the current checks, draft releases and optional
+portfolio deployment. Version tags create a draft unsigned extension release
+after CI passes. Static portfolio deployment is manual and disabled by default.
+The full delivery plan retains the outstanding application release gates.
 
 ## Repository map
 

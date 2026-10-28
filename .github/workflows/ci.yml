@@ -3,76 +3,229 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '24'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  # No inference credentials are read from repository secrets in CI.
+  OPENROUTER_API_KEY: ''
+  GEMINI_API_KEY: ''
+
 jobs:
   backend:
-    name: Backend lint + tests (Chunks A/B/C)
-    runs-on: ubuntu-latest
+    name: Backend (${{ matrix.database }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        image: ${{ matrix.database == 'postgres' && 'postgres:16' || '' }}
+        env:
+          POSTGRES_USER: factcheck
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: factcheck
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgres://factcheck:ci-only-password@127.0.0.1:5432/factcheck' || 'sqlite:///ci.sqlite3' }}
+      DJANGO_SETTINGS_MODULE: config.settings.dev
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
-      - name: Lint (ruff)
-        run: ruff check .
-      # CI never talks to live APIs: B and C's tests use recorded fixtures (see WORK_CHUNKS.md).
-      - name: Tests (pytest)
-        run: pytest
+          cache-dependency-path: requirements-ci.txt
+      - name: Install locked dependencies
+        run: python -m pip install --require-hashes -r requirements-ci.txt
+      - name: Check dependency consistency
+        run: python -m pip check
+      - name: Lint
+        run: python -m ruff check .
+      - name: Check models and migrations
+        run: |
+          python manage.py check
+          python manage.py makemigrations --check --dry-run
+          python manage.py migrate --noinput
+      - name: Validate production settings (no deployment)
+        env:
+          DJANGO_SECRET_KEY: ci-only-not-a-production-secret-for-django-deployment-checks-123456789
+          DJANGO_ALLOWED_HOSTS: example.invalid
+        run: python manage.py check --deploy --settings=config.settings.prod --fail-level WARNING
+      - name: Test without external network access
+        # PostgreSQL may connect only to loopback; SQLite cannot open sockets.
+        run: >-
+          python -m pytest
+          ${{ matrix.database == 'sqlite' && '--disable-socket' || '--allow-hosts=127.0.0.1' }}
+          --junitxml=reports/pytest.xml --cov=apps --cov=config
+          --cov-report=xml:reports/coverage.xml --cov-report=term-missing
+      - name: Upload test and coverage reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: backend-reports-${{ matrix.database }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 7
 
   web:
-    name: Web app (Chunk D)
-    runs-on: ubuntu-latest
+    name: Web client checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: frontend/web
     steps:
-      - uses: actions/checkout@v4
-      - name: Build & test web app
-        if: ${{ hashFiles('frontend/web/package.json') != '' }}
-        run: |
-          cd frontend/web
-          npm ci
-          npm run build --if-present
-          npm test --if-present
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/web/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Validate shipped JavaScript
+        run: npm run build
+      - name: Test API client with offline response fixtures
+        run: npm test
+      - name: Audit web dependencies
+        run: npm audit --audit-level=high
 
   extension:
-    name: Firefox extension lint (Chunk D)
-    runs-on: ubuntu-latest
+    name: Extension lint and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
-      - name: Lint & package extension
-        if: ${{ hashFiles('extension/manifest.json') != '' }}
-        run: |
-          npx --yes web-ext lint --source-dir=extension --warnings-as-errors
-          npx --yes web-ext build --source-dir=extension --artifacts-dir=dist
-      - name: Upload extension artifact
-        if: ${{ hashFiles('extension/manifest.json') != '' }}
-        uses: actions/upload-artifact@v4
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run extension:lint
+      - run: npm audit --audit-level=high
+      - run: npm run extension:build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: firefox-extension
-          path: dist/
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  dependencies:
+    name: Python dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - run: python -m pip install --require-hashes -r requirements-ci.txt
+      - name: Check published vulnerability advisories
+        run: python -m pip_audit --strict --require-hashes -r requirements-ci.txt
+
+  workflows:
+    name: Workflow validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install checksum-verified actionlint
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}" \
+            --output "$RUNNER_TEMP/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+  complete:
+    name: CI complete
+    if: ${{ always() }}
+    needs: [backend, web, extension, dependencies, workflows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    env:
+      RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - name: Require every check to succeed
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          failed = [job for job, info in json.loads(os.environ['RESULTS']).items()
+                    if info['result'] != 'success']
+          if failed:
+              sys.exit('Required checks did not succeed: ' + ', '.join(failed))
+          PY
 
   release:
-    name: Release (tag → packaged extension)
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [backend, extension, web]
-    runs-on: ubuntu-latest
+    name: Draft extension release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: complete
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
-      - name: Package extension
-        if: ${{ hashFiles('extension/manifest.json') != '' }}
-        run: npx --yes web-ext build --source-dir=extension --artifacts-dir=dist
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: ${{ hashFiles('extension/manifest.json') != '' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a main-branch commit and matching manifest version
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          python - <<'PY'
+          import json, os, sys
+          version = json.load(open('extension/manifest.json'))['version']
+          if os.environ['RELEASE_TAG'] != 'v' + version:
+              sys.exit('Release tag must equal v + extension manifest version')
+          PY
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          files: dist/*.zip
-          generate_release_notes: true
+          name: firefox-extension
+          path: dist
+      - name: Record checksums and draft release
+        run: |
+          cd dist
+          sha256sum -- *.zip > SHA256SUMS.txt
+          cd ..
+          printf '%s\n' 'Unsigned development extension. CI checks are not Firefox runtime or production acceptance. Review the portfolio plan and outstanding P0 issues before publishing.' > release-notes.md
+          gh release create "$RELEASE_TAG" dist/*.zip dist/SHA256SUMS.txt \
+            --verify-tag --draft --title "FactCheckAI $RELEASE_TAG" \
+            --notes-file release-notes.md

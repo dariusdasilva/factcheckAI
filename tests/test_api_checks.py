@@ -105,6 +105,10 @@ def test_list_returns_paginated_own_runs(client_fixture):
         claim = Claim.objects.create(text=f"claim {i}", created_by=user)
         CheckRun.objects.create(claim=claim)
 
+    # Equal timestamps must still produce deterministic newest-ID-first history.
+    same_time = CheckRun.objects.filter(claim__created_by=user).first().created_at
+    CheckRun.objects.filter(claim__created_by=user).update(created_at=same_time)
+
     response = client.get(SUBMIT_URL)
     assert response.status_code == 200
     data = response.json()

@@ -99,7 +99,7 @@ class ChecksViewSet(
         return (
             CheckRun.objects.select_related("claim")
             .filter(claim__created_by=self.request.user)
-            .order_by("-created_at")
+            .order_by("-created_at", "-pk")
         )
 
     def create(self, request: Request, *args, **kwargs) -> Response:

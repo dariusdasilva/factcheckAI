@@ -1,0 +1,15 @@
+{
+  "name": "factcheckai-tooling",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "extension:lint": "web-ext lint --source-dir=extension --warnings-as-errors",
+    "extension:build": "web-ext build --source-dir=extension --artifacts-dir=dist --filename=factcheckai-{version}.zip"
+  },
+  "devDependencies": {
+    "web-ext": "10.8.0"
+  }
+}
